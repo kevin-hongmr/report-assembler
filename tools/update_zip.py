@@ -23,7 +23,7 @@ replacements = {
     f"{TOP}/启动汇编程序.bat": new_bat,
     f"{TOP}/启动汇编程序.sh": new_sh,
     f"{TOP}/图标.png": new_icon,
-    f"{TOP}/使用说明.md": open(os.path.join(ROOT, "使用说明.md"), "rb").read(),
+    f"{TOP}/README.md": open(os.path.join(ROOT, "README.md"), "rb").read(),
     f"{TOP}/app/main.py": open(os.path.join(ROOT, "app", "main.py"), "rb").read(),
     f"{TOP}/app/ui/main_window.py": open(os.path.join(ROOT, "app", "ui", "main_window.py"), "rb").read(),
     f"{TOP}/app/core/assembler.py": open(os.path.join(ROOT, "app", "core", "assembler.py"), "rb").read(),

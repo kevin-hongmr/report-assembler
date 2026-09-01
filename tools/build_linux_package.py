@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOP_FILES = [
     "启动汇编程序.sh",
     "图标.png",
-    "使用说明.md",
+    "README.md",
     "国产系统运行说明.md",
     "requirements.txt",
 ]

@@ -3,7 +3,7 @@
 
 产出：
   _pkg/汇报汇编程序/
-    ├── 使用说明.md
+    ├── README.md
     ├── 启动汇编程序.bat
     ├── 启动汇编程序.sh
     └── app/{main.py, core, ui, fonts_bundled, runtime}
@@ -84,7 +84,7 @@ else:
 _icon = os.path.join(ROOT, "图标.png")
 if os.path.isfile(_icon):
     shutil.copy2(_icon, os.path.join(DEST, "图标.png"))
-shutil.copy2(os.path.join(ROOT, "使用说明.md"), os.path.join(DEST, "使用说明.md"))
+shutil.copy2(os.path.join(ROOT, "README.md"), os.path.join(DEST, "README.md"))
 
 print("打包目录构建完成：", DEST)
 
