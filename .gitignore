@@ -1,0 +1,50 @@
+# ===== 测试文件（用户要求不入库）=====
+tests/
+
+# ===== 过程 / 临时文件（根目录）=====
+_exp_nostyle.docx
+_pdf_tmp/
+_pdf_tmp2/
+_pdf_tmp3/
+_pdf_tmp6/
+_pdf_tmp7/
+_pdf_tmp9/
+_pdf_tmpE/
+_regen_work/
+_tmp_*.docx
+备份/
+测试/
+测试2/
+测试3/
+修复说明_交互与日志.md
+汇编格式修复概述.md
+
+# 规划 / 过程文件（用户明确要求不入库）
+findings.md
+task_plan.md
+# 测试脚本（非程序源码，用户要求不入库）
+tools/test_ind_behavior.py
+
+# ===== 构建产物与发布包（体积大，且可重新生成）=====
+build/
+_pkg/
+tools/_pkg/
+*.zip
+
+# ===== 开发环境与缓存 =====
+app/.venv/
+app/libreoffice/
+__pycache__/
+*.pyc
+tools/__pycache__/
+
+# ===== 运行日志 =====
+logs/
+
+# ===== 内部规划与记忆（工作笔记，含项目内部信息，不公开）=====
+.workbuddy/
+.planning/
+
+# ===== 编辑器 / 系统 =====
+.DS_Store
+Thumbs.db
