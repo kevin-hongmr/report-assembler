@@ -130,6 +130,9 @@ def main():
     ap.add_argument("--wheels-dir", default=None,
                     help="离线依赖目录，默认 build/wheels/<arch>（即 download_wheels.py 的输出）。"
                          "如需手动指定，可传 build/wheels/aarch64 等。")
+    ap.add_argument("--libreoffice-dir", default=None,
+                    help="便携 LibreOffice 目录（含 opt/ 子目录），默认 app/libreoffice。"
+                         "用于 aarch64 / x86_64 各自解包目录互不覆盖。")
     opts = ap.parse_args()
 
     arch = opts.arch
@@ -207,7 +210,7 @@ def main():
         print("  + app/（%d 个文件）" % (stats["count"] - before))
 
         # 2.5) 便携 LibreOffice（国产系统 PDF 预览/转换引擎，免 root）
-        lo_src = os.path.join(ROOT, "app", "libreoffice")
+        lo_src = opts.libreoffice_dir or os.path.join(ROOT, "app", "libreoffice")
         if os.path.isdir(os.path.join(lo_src, "opt")):
             before = stats["count"]
             add_libreoffice_tree(zf, lo_src, base + "/app/libreoffice", stats)
