@@ -86,8 +86,8 @@ def main():
     ap.add_argument("--arch", default="aarch64", choices=["aarch64", "x86_64"])
     ap.add_argument("--out", default=None, help="输出 zip 路径")
     ap.add_argument("--wheels-dir", default=None,
-                    help="离线依赖目录，默认 wheels/。若按架构分目录存放，"
-                         "可指定 wheels_aarch64/ 或 wheels_x86_64/")
+                    help="离线依赖目录，默认 build/wheels/<arch>（即 download_wheels.py 的输出）。"
+                         "如需手动指定，可传 build/wheels/aarch64 等。")
     opts = ap.parse_args()
 
     arch = opts.arch
@@ -98,7 +98,7 @@ def main():
     print("=" * 70)
 
     # 前置检查
-    wheels = os.path.abspath(opts.wheels_dir) if opts.wheels_dir else os.path.join(ROOT, "wheels")
+    wheels = os.path.abspath(opts.wheels_dir) if opts.wheels_dir else os.path.join(ROOT, "build", "wheels", arch)
     if not os.path.isdir(wheels) or not [f for f in os.listdir(wheels) if f.endswith(".whl")]:
         print("!! wheels/ 为空，请先执行：")
         print("     python tools/download_wheels.py --arch %s" % arch)

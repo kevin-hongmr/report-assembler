@@ -83,6 +83,28 @@ if [ -n "$GLIBC" ]; then
     fi
 fi
 
+# 校验离线包是否包含启动所需的所有 wheel
+# （避免"装到一半才发现缺 PyQt6"，提前给明确提示）
+check_wheels_present() {
+    [ -d "$WHEELS" ] || return 0
+    local need prefix miss=0
+    for need in python-docx lxml PyQt6; do
+        case "$need" in
+            python-docx) prefix="python_docx" ;;
+            lxml)        prefix="lxml" ;;
+            PyQt6)       prefix="PyQt6-" ;;
+        esac
+        if ! ls "$WHEELS"/${prefix}*.whl >/dev/null 2>&1; then
+            log "警告：wheels/ 内缺少 $need 的离线包（${prefix}*.whl），离线安装会失败。"
+            miss=1
+        fi
+    done
+    if [ "$miss" = "1" ]; then
+        log "      请联系分发方确认该离线包针对 $ARCH 架构完整打包，或改用联网安装。"
+    fi
+}
+check_wheels_present
+
 # ---------------------------------------------------------------- 2. 依赖检测
 deps_ok() {
     "$1" -c 'import docx, lxml; from PyQt6.QtWidgets import QApplication' >/dev/null 2>&1
@@ -114,10 +136,13 @@ have_pip() { "$1" -m pip --version >/dev/null 2>&1; }
 
 run_pip() {
     local py="$1"; shift
-    if have_pip "$py"; then
-        "$py" -m pip "$@"
-    elif [ -n "$PIP_WHL" ]; then
+    if [ -n "$PIP_WHL" ]; then
+        # 优先使用随包自带的新版 pip（如 pip-25.0.1）。
+        # 系统自带 pip 可能过旧（如 20.0.2），不认识 manylinux_2_28 等新平台标签，
+        # 会导致 PyQt6 等离线 wheel 被判定为"标签不匹配"而无法安装。
         PYTHONPATH="$PIP_WHL" "$py" -m pip "$@"
+    elif have_pip "$py"; then
+        "$py" -m pip "$@"
     else
         return 1
     fi
