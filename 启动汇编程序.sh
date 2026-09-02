@@ -112,8 +112,10 @@ check_wheels_present
 #   fcitx/fcitx5:  sudo apt install fcitx-frontend-qt6   （fcitx5 用 fcitx5-frontend-qt6）
 #   ibus:          sudo apt install ibus-qt6              （或 libqt6-ibus-platforminputcontext）
 detect_im() {
-    if pgrep -x fcitx5 >/dev/null 2>&1 || pgrep -x fcitx >/dev/null 2>&1 \
-       || command -v fcitx5 >/dev/null 2>&1 || command -v fcitx >/dev/null 2>&1; then
+    # fcitx5 与 fcitx4 注册的 Qt 模块名不同（fcitx5 / fcitx），必须区分，否则 Qt 找不到对应插件
+    if pgrep -x fcitx5 >/dev/null 2>&1 || command -v fcitx5 >/dev/null 2>&1; then
+        printf 'fcitx5'
+    elif pgrep -x fcitx >/dev/null 2>&1 || command -v fcitx >/dev/null 2>&1; then
         printf 'fcitx'
     elif pgrep -x ibus-daemon >/dev/null 2>&1 || command -v ibus-daemon >/dev/null 2>&1; then
         printf 'ibus'
@@ -130,6 +132,50 @@ if [ -n "$IM_MODULE" ]; then
 else
     log "提示：未检测到 fcitx/ibus 输入法，中文输入可能不可用；可手动 export QT_IM_MODULE=fcitx 后重试。"
 fi
+
+# ---------------------------------------------------------------- 输入法插件接入
+# pip 安装的 PyQt6 自带一套 Qt6，其插件目录在 <site-packages>/PyQt6/Qt6/plugins 下，
+# 默认不会去搜索系统的 /usr/lib/qt6/plugins。因此即使系统装了 fcitx-frontend-qt6 等
+# 输入法插件，PyQt6 也加载不到、界面仍无法输入中文。
+# 此函数把系统里已装的 Qt6 输入法插件（fcitx/fcitx5/ibus）复制进 PyQt6 自己的插件目录，
+# 使 QT_IM_MODULE 指定的输入法真正生效。
+# 用法：link_im_plugin <python> [PYTHONPATH]  （PYTHONPATH 用于 pylibs 目录安装方案）
+link_im_plugin() {
+    local py="$1" pp="$2"
+    PYTHONPATH="$pp" "$py" - 2>/dev/null <<'PYEOF'
+import os, shutil, sys
+try:
+    import PyQt6
+except ImportError:
+    sys.exit(0)
+pkg = os.path.dirname(os.path.abspath(PyQt6.__file__))
+plug = os.path.join(pkg, "Qt6", "plugins")
+dst = os.path.join(plug, "platforminputcontexts")
+if not os.path.isdir(plug):
+    sys.exit(0)
+os.makedirs(dst, exist_ok=True)
+found = 0
+for d in ("/usr/lib/qt6/plugins/platforminputcontexts",
+          "/usr/lib/aarch64-linux-gnu/qt6/plugins/platforminputcontexts",
+          "/usr/lib/x86_64-linux-gnu/qt6/plugins/platforminputcontexts",
+          "/usr/lib64/qt6/plugins/platforminputcontexts"):
+    if not os.path.isdir(d):
+        continue
+    for fn in os.listdir(d):
+        if not fn.endswith(".so"):
+            continue
+        t = os.path.join(dst, fn)
+        if not os.path.exists(t):
+            try:
+                shutil.copy2(os.path.join(d, fn), t)
+                print("输入法插件：已接入", fn)
+                found = 1
+            except Exception:
+                pass
+if not found:
+    print("提示：未找到系统 Qt6 输入法插件，中文输入可能仍不可用；可执行 sudo apt install fcitx5-frontend-qt6")
+PYEOF
+}
 
 # ---------------------------------------------------------------- 字体安装（免 root）
 # 公文排版需 仿宋_GB2312 / 方正小标宋 / 楷体_GB2312 / 黑体 / 宋体 等字体，麒麟/统信常缺失。
@@ -257,6 +303,8 @@ install_optional() {
 }
 
 exec_run() {
+    # 启动前把系统 Qt6 输入法插件接入 PyQt6（否则界面无法输入中文）
+    link_im_plugin "$1" "$2"
     if [ -n "$2" ]; then
         exec env PYTHONPATH="$2" "$1" app/main.py
     else
