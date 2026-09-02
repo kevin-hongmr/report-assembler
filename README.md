@@ -61,7 +61,7 @@ chmod +x 启动汇编程序.sh
   `sudo apt install python3-pyqt6 python3-docx python3-lxml` 后重新运行脚本。
 - 若 PyQt6 安装成功但仍无法启动（报 `libGL`、`libxcb` 等错误），请补装图形库：
   `sudo apt install libgl1 libegl1 libxkbcommon-x11-0 libdbus-1-3 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-randr0 libxcb-xfixes0`。
-- `.doc` / `.wps` 转换与预览依赖 WPS（Linux 版），请安装 WPS Office for Linux；仅 `.docx` 汇编不依赖 WPS。
+- `.doc` / `.wps` 转换与预览依赖 **LibreOffice**（Linux 版），请安装 LibreOffice（`sudo apt install libreoffice-writer`）；WPS for Linux 不支持命令行转换；仅 `.docx` 汇编不依赖任何转换引擎。
 - 若提示"解释器错误"或 `^M`，说明脚本换行符被 Windows 解压工具破坏——请用系统自带归档管理器重新解压（脚本本身为 LF 换行）。
 
 > 完整的国产系统离线部署与排障步骤，请另行查阅包内的 `国产系统运行说明.md`。

@@ -159,7 +159,7 @@ class Worker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("文档汇编程序 · CA政务版")
+        self.setWindowTitle("文档汇编程序 · 政务版")
         self.resize(1100, 880)   # 高度加大，保证待汇编文档表格区与原来一样大
         self.work_dir = os.path.join(tempfile.gettempdir(), "doc_assembler_work")
         os.makedirs(self.work_dir, exist_ok=True)

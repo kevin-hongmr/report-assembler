@@ -105,6 +105,32 @@ check_wheels_present() {
 }
 check_wheels_present
 
+# ---------------------------------------------------------------- 输入法支持
+# Qt6 界面输入中文依赖对应输入法模块（QT_IM_MODULE）。麒麟/统信常用 fcitx / fcitx5 / ibus。
+# 未设置或缺少 Qt6 输入法插件时，界面输入框会"无法切换输入法 / 未识别输入窗口"。
+# 此处自动探测并导出环境变量；若仍无法输入中文，需补装对应 Qt6 插件（见 国产系统运行说明.md）：
+#   fcitx/fcitx5:  sudo apt install fcitx-frontend-qt6   （fcitx5 用 fcitx5-frontend-qt6）
+#   ibus:          sudo apt install ibus-qt6              （或 libqt6-ibus-platforminputcontext）
+detect_im() {
+    if pgrep -x fcitx5 >/dev/null 2>&1 || pgrep -x fcitx >/dev/null 2>&1 \
+       || command -v fcitx5 >/dev/null 2>&1 || command -v fcitx >/dev/null 2>&1; then
+        printf 'fcitx'
+    elif pgrep -x ibus-daemon >/dev/null 2>&1 || command -v ibus-daemon >/dev/null 2>&1; then
+        printf 'ibus'
+    else
+        printf ''
+    fi
+}
+IM_MODULE="$(detect_im)"
+if [ -n "$IM_MODULE" ]; then
+    export QT_IM_MODULE="$IM_MODULE"
+    export GTK_IM_MODULE="$IM_MODULE"
+    export XMODIFIERS="@im=$IM_MODULE"
+    log "输入法：$IM_MODULE（已设置 QT_IM_MODULE=$IM_MODULE）"
+else
+    log "提示：未检测到 fcitx/ibus 输入法，中文输入可能不可用；可手动 export QT_IM_MODULE=fcitx 后重试。"
+fi
+
 # ---------------------------------------------------------------- 2. 依赖检测
 deps_ok() {
     "$1" -c 'import docx, lxml; from PyQt6.QtWidgets import QApplication' >/dev/null 2>&1
