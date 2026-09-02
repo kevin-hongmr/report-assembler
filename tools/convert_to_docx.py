@@ -7,9 +7,10 @@ convert_to_docx.py —— 批量把 .doc / .wps 转成 .docx（独立转换脚�
   python convert_to_docx.py 文件夹            # 递归转换该目录下所有 .doc/.wps
   直接把 .doc/.wps 文件或文件夹拖到「转docx.bat」/「转docx.sh」上即可。
 
-转换引擎：仅依赖 WPS
+转换引擎（由 app/core/converter 自动探测，无需手动选择）：
   - Windows：WPS COM 自动化（个人版 / 专业版均可，无需命令行支持）
-  - 麒麟 / 统信：wps 命令行
+  - 麒麟 / 统信等国产 Linux：LibreOffice 无头转换
+    （WPS for Linux 不支持命令行转换，故国产系统走 LibreOffice）
 
 转换完成后，把生成的 .docx 添加进「文档汇编程序」即可汇编（.docx 汇编不依赖任何引擎）。
 """

@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 rem ============================================
-rem  批量把 .doc/.wps 转成 .docx（仅依赖 WPS）
+rem  批量把 .doc/.wps 转成 .docx（Windows 用 WPS；国产 Linux 用 LibreOffice）
 rem  用法：把 .doc/.wps 文件或文件夹直接拖到本图标上，松开即批量转换。
 rem  转换后的 .docx 输出在原位置，可直接添加进汇编程序。
 rem ============================================

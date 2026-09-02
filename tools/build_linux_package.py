@@ -30,6 +30,14 @@ TOP_FILES = [
     "requirements.txt",
 ]
 
+# 独立转换脚本（方便用户在国产系统上先把 .doc/.wps 批量转成 .docx，
+# 再添加进汇编程序；Windows 上则走 WPS。由 app/core/converter 自动选引擎）
+TOOL_FILES = [
+    "tools/convert_to_docx.py",
+    "tools/转docx.sh",
+    "tools/转docx.bat",
+]
+
 # 需要排除的目录 / 文件
 EXCLUDE_DIRS = {
     "libreoffice",      # 1.6GB，程序走 WPS 转换，用不到
@@ -135,6 +143,25 @@ def main():
                     zf.writestr(info, f.read())
             else:
                 zf.write(p, "%s/%s" % (base, fn))
+            stats["count"] += 1
+            stats["bytes"] += os.path.getsize(p)
+            print("  + %s" % fn)
+
+        # 1.5) 独立转换脚本（.sh 需要可执行位）
+        for fn in TOOL_FILES:
+            p = os.path.join(ROOT, fn)
+            if not os.path.isfile(p):
+                print("  [跳过] 工具脚本不存在：%s" % fn)
+                continue
+            arc = "%s/%s" % (base, fn)
+            if fn.endswith((".sh", ".bat")):
+                info = zipfile.ZipInfo(arc)
+                info.external_attr = (0o100755 if fn.endswith(".sh") else 0o100644) << 16
+                info.compress_type = zipfile.ZIP_DEFLATED
+                with open(p, "rb") as f:
+                    zf.writestr(info, f.read())
+            else:
+                zf.write(p, arc)
             stats["count"] += 1
             stats["bytes"] += os.path.getsize(p)
             print("  + %s" % fn)

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+import platform
 import tempfile
 from datetime import datetime
 
@@ -527,23 +528,34 @@ class MainWindow(QMainWindow):
     # ---------------- 环境检查 ----------------
     def _check_env(self):
         msgs = []
-        wps = converter.detect_engine()
-        if not wps:
-            log.warning("未检测到 WPS")
-            msgs.append("⚠ 未检测到 WPS。本程序转换/预览依赖 WPS（专业版/政府版，"
-                        "支持命令行转换）。\n请安装 WPS 后重试。\n"
-                        "（WPS 个人版通常不支持命令行转换，无法用于本程序。）")
+        name, exe = converter.detect_converter()
+        if not exe:
+            log.warning("未检测到可用的转换引擎")
+            if platform.system() == "Windows":
+                msgs.append("⚠ 未检测到 WPS。本程序转换/预览依赖 WPS（专业版/政府版，"
+                            "支持命令行转换）。\n请安装 WPS 后重试。\n"
+                            "（WPS 个人版通常不支持命令行转换，无法用于本程序。）")
+            else:
+                msgs.append("⚠ 未检测到 LibreOffice，也未检测到 WPS。\n"
+                            "国产系统（麒麟/统信）转换 .doc/.wps → .docx 依赖 "
+                            "LibreOffice 无头转换，请先安装 LibreOffice 后重试。\n"
+                            "（WPS for Linux 不支持命令行转换，无法用于本程序。）")
         else:
-            log.info("检测到 WPS：%s", wps)
+            log.info("检测到转换引擎：%s @ %s", name, exe)
             ok, why = converter.wps_can_convert()
             if ok:
-                msgs.append("已检测到 WPS：" + wps + "，可用于转换与预览。")
+                msgs.append("已检测到转换引擎（%s）：%s，可用于转换与预览。" % (name, exe))
             else:
-                log.warning("WPS 命令行转换测试失败：%s", why)
-                msgs.append("⚠ 已检测到 WPS，但命令行转换测试失败：\n" + why +
-                            "\n很可能为 WPS 个人版（不支持无头命令行转换）。\n"
-                            "请改用 WPS 专业版/政府版，否则 .doc/.wps 转换与预览不可用，"
-                            "仅 .docx 汇编可正常进行。")
+                log.warning("%s 转换测试失败：%s", name, why)
+                if name == "LibreOffice":
+                    msgs.append("⚠ 已检测到 LibreOffice，但转换测试失败：\n" + why +
+                                "\n请确认 LibreOffice 安装完整（soffice 可正常启动）；"
+                                "否则 .doc/.wps 转换不可用，仅 .docx 汇编可正常进行。")
+                else:
+                    msgs.append("⚠ 已检测到 WPS，但命令行转换测试失败：\n" + why +
+                                "\n很可能为 WPS 个人版（不支持无头命令行转换）。\n"
+                                "请改用 WPS 专业版/政府版，否则 .doc/.wps 转换与预览不可用，"
+                                "仅 .docx 汇编可正常进行。")
         from app.core import preview as preview_mod
         if not preview_mod.has_pymupdf():
             log.warning("未安装 PyMuPDF，预览不可用")

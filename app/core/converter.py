@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-converter.py —— 读取与转换模块（仅依赖 WPS）
+converter.py —— 读取与转换模块（转换引擎按平台选择）
 把 .doc / .wps / .docx 统一转为 .docx（临时文件），交给 assembler 处理。
 预览时再把成品 .docx 转 PDF。
 
-探测方式（Windows）：优先查注册表 App Paths（覆盖当前用户安装、含版本号子目录），
-再按常见路径通配查找；Linux 麒麟/统信通常自带 WPS。
+探测方式：
+- Windows：优先 WPS（COM 自动化；个人版/专业版均可），兜底 Microsoft Word COM。
+- Linux 国产系统（麒麟/统信）：优先 LibreOffice 无头转换
+  （`soffice --headless --convert-to`）；WPS on Linux 不支持命令行转换，
+  仅在 LibreOffice 缺失时兜底尝试 WPS 命令行。
 
-重要：WPS 个人版通常不支持无头命令行转换；本程序要求使用 WPS 专业版/政府版。
-提供 wps_can_convert() 做转换能力自检，帮助用户提前发现问题。
+提供 detect_converter() / wps_can_convert() 做引擎探测与能力自检。
 """
 import os
 import glob
@@ -86,6 +88,43 @@ def _find_wps():
 def detect_engine():
     """返回 WPS 可执行文件路径，未检测到返回 None。"""
     return _find_wps()
+
+
+def _find_soffice():
+    """探测 LibreOffice 可执行文件（无头转换，Linux/Windows 通用）。
+
+    国产系统（麒麟/统信）WPS 不支持命令行转换，LibreOffice 的
+    `soffice --headless --convert-to` 是可靠的无头转换方案。
+    """
+    for name in ("soffice", "libreoffice", "soffice.bin"):
+        f = shutil.which(name)
+        if f and _is_exe(f):
+            return f
+    for p in ("/usr/bin/soffice", "/usr/bin/libreoffice",
+              "/opt/libreoffice/program/soffice",
+              "/usr/lib/libreoffice/program/soffice",
+              "C:/Program Files/LibreOffice/program/soffice.exe"):
+        if _is_exe(p):
+            return p
+    return None
+
+
+def detect_converter():
+    """返回当前平台可用的转换引擎 (name, path)。
+
+    Windows: WPS（COM 自动化）；Linux 国产系统: LibreOffice（无头命令行）。
+    供界面状态提示与能力自检使用。
+    """
+    if platform.system() == "Windows":
+        exe = detect_engine()
+        return ("WPS", exe) if exe else (None, None)
+    soffice = _find_soffice()
+    if soffice:
+        return ("LibreOffice", soffice)
+    wps = detect_engine()
+    if wps:
+        return ("WPS", wps)
+    return (None, None)
 
 
 def _kill_proc(exe):
@@ -243,31 +282,79 @@ def _convert_with_word_com(src, out_dir, fmt):
     raise last
 
 
-def _run_convert(src, out_dir, fmt):
-    """转换策略：WPS COM → WPS 命令行 → Microsoft Word COM（兜底）。
+def _convert_with_soffice(exe, src, out_dir, fmt):
+    """用 LibreOffice 无头转换（Linux/Windows 通用，国产系统推荐）。
 
-    WPS 优先（与历史行为一致）；WPS 不可用（COM 未注册、个人版不支持命令行等）
-    时自动改用 Microsoft Word COM，避免整条汇编流程因 WPS 环境缺失而中断。
+    通过 `soffice --headless --convert-to <fmt> --outdir <out> <src>` 完成转换。
+    使用独立 UserInstallation 配置目录，避免与系统已运行的 LibreOffice 实例冲突。
+    """
+    work = tempfile.mkdtemp(prefix="lo_")
+    ext = os.path.splitext(src)[1].lower() or ".docx"
+    safe_src = os.path.join(work, "src" + ext)
+    try:
+        shutil.copy2(src, safe_src)
+    except Exception as e:
+        raise RuntimeError(f"准备转换源文件失败：{e}")
+    user_install = "file://" + os.path.join(work, "lo_profile").replace("\\", "/")
+    cmd = [exe, "--headless", "--norestore", "--invisible", "--nodefault",
+           "-env:UserInstallation=" + user_install,
+           "--convert-to", fmt, "--outdir", work, safe_src]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        _kill_proc(exe)
+        raise RuntimeError("LibreOffice 转换超时（文档过大或含不支持对象）")
+    if r.returncode != 0:
+        raise RuntimeError(
+            "LibreOffice 转换失败：" + (r.stderr or r.stdout or "返回非零")[:300])
+    target = os.path.join(work, "src." + fmt)
+    if not os.path.isfile(target):
+        for f in os.listdir(work):
+            if f.lower().endswith("." + fmt):
+                target = os.path.join(work, f)
+                break
+    if not os.path.isfile(target) or os.path.getsize(target) == 0:
+        raise RuntimeError(f"LibreOffice 转换后未找到有效的 .{fmt} 文件")
+    return target
+
+
+def _run_convert(src, out_dir, fmt):
+    """转换策略（按平台选择引擎）：
+
+    - Windows：WPS COM → WPS 命令行 → Microsoft Word COM（兜底）。
+    - Linux（国产系统）：优先 LibreOffice 无头转换；WPS on Linux 不支持命令行
+      转换，仅在 LibreOffice 缺失时兜底尝试 WPS 命令行。
     """
     errors = []
-    exe = detect_engine() if platform.system() == "Windows" else None
-    if exe:
-        try:
-            return _convert_with_com(exe, src, out_dir, fmt)
-        except Exception as e:
-            errors.append("WPS COM: " + str(e))
-        try:
-            return _convert_with(exe, src, out_dir, fmt)
-        except Exception as e:
-            errors.append("WPS 命令行: " + str(e))
-    else:
-        errors.append("WPS: 未检测到 WPS，改用 Microsoft Word")
     if platform.system() == "Windows":
+        exe = detect_engine()
+        if exe:
+            try:
+                return _convert_with_com(exe, src, out_dir, fmt)
+            except Exception as e:
+                errors.append("WPS COM: " + str(e))
+            try:
+                return _convert_with(exe, src, out_dir, fmt)
+            except Exception as e:
+                errors.append("WPS 命令行: " + str(e))
         try:
             return _convert_with_word_com(src, out_dir, fmt)
         except Exception as e:
             errors.append("Word COM: " + str(e))
-    raise RuntimeError("转换失败（已尝试 WPS COM / WPS 命令行 / Word COM）：\n"
+    else:
+        soffice = _find_soffice()
+        if soffice:
+            try:
+                return _convert_with_soffice(soffice, src, out_dir, fmt)
+            except Exception as e:
+                errors.append("LibreOffice: " + str(e))
+        wps = detect_engine()
+        if wps:
+            try:
+                return _convert_with(wps, src, out_dir, fmt)
+            except Exception as e:
+                errors.append("WPS 命令行: " + str(e))
+    raise RuntimeError("转换失败（已尝试 " + " / ".join(errors) + "）：\n"
                        + "\n".join(errors))
 
 
@@ -409,18 +496,18 @@ def convert_to_pdf(src_path, out_dir):
 def wps_can_convert(timeout=20):
     """能力自检：用临时 docx 实际试转一次，返回 (ok, msg)。
 
-    ok=True 表示 WPS 存在且可命令行转换；ok=False 时 msg 给出原因
-    （未安装 / 个人版不支持等），便于界面直接提示用户。
+    ok=True 表示存在可用的转换引擎（Windows 的 WPS，或 Linux 的 LibreOffice）
+    且可完成转换；ok=False 时 msg 给出原因，便于界面直接提示用户。
     """
-    exe = detect_engine()
+    name, exe = detect_converter()
     if not exe:
-        return False, "未检测到 WPS，请安装 WPS（专业版/政府版）。"
+        return False, "未检测到可用的转换引擎（Linux 请安装 LibreOffice；Windows 请安装 WPS）。"
     try:
         from docx import Document
     except Exception:
         # 无法构造测试文件则跳过（不阻断程序，仅跳过自检）
         return True, ""
-    td = tempfile.mkdtemp(prefix="wps_check_")
+    td = tempfile.mkdtemp(prefix="conv_check_")
     try:
         src = os.path.join(td, "t.docx")
         Document().save(src)
@@ -428,6 +515,6 @@ def wps_can_convert(timeout=20):
         ok = os.path.isfile(out) and os.path.getsize(out) > 0
         return ok, "" if ok else "转换未生成有效 PDF"
     except Exception as e:
-        return False, str(e)
+        return False, (name + " 转换测试失败：" + str(e))[:300]
     finally:
         shutil.rmtree(td, ignore_errors=True)
