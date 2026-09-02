@@ -131,6 +131,42 @@ else
     log "提示：未检测到 fcitx/ibus 输入法，中文输入可能不可用；可手动 export QT_IM_MODULE=fcitx 后重试。"
 fi
 
+# ---------------------------------------------------------------- 字体安装（免 root）
+# 公文排版需 仿宋_GB2312 / 方正小标宋 / 楷体_GB2312 / 黑体 / 宋体 等字体，麒麟/统信常缺失。
+# 把随包字体复制到用户字体目录并刷新字体缓存，使 python-docx 排版与 LibreOffice 转 PDF
+# 都能正确渲染公文版式（LibreOffice 通过 fontconfig 发现这些字体）。
+install_bundled_fonts() {
+    local font_dir="$ROOT/字体包"
+    [ -d "$font_dir" ] || font_dir="$ROOT/app/fonts_bundled"
+    [ -d "$font_dir" ] || return 0
+    local target="${XDG_DATA_HOME:-$HOME/.local/share}/fonts"
+    mkdir -p "$target" 2>/dev/null || return 0
+    local n=0 f bn
+    for f in "$font_dir"/*.ttf "$font_dir"/*.ttc "$font_dir"/*.otf; do
+        [ -f "$f" ] || continue
+        bn="$(basename "$f")"
+        if [ ! -f "$target/$bn" ]; then
+            cp "$f" "$target/$bn" 2>/dev/null && n=$((n+1))
+        fi
+    done
+    if [ "$n" -gt 0 ]; then
+        if command -v fc-cache >/dev/null 2>&1; then
+            fc-cache -f "$target" >/dev/null 2>&1
+        fi
+        log "字体：已安装 $n 个随包字体到 $target（免 root）"
+    fi
+}
+install_bundled_fonts
+
+# ---------------------------------------------------------------- LibreOffice 就位（免 root）
+# 随包便携 LibreOffice 解压后需确保可执行（部分解压工具会丢失可执行位）。
+fix_soffice_exec() {
+    local lo="$ROOT/app/libreoffice/opt"
+    [ -d "$lo" ] || return 0
+    find "$lo" -type d -name program -exec chmod -R a+x {} \; 2>/dev/null
+}
+fix_soffice_exec
+
 # ---------------------------------------------------------------- 2. 依赖检测
 deps_ok() {
     "$1" -c 'import docx, lxml; from PyQt6.QtWidgets import QApplication' >/dev/null 2>&1

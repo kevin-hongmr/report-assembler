@@ -4,7 +4,8 @@
 
 与 Windows 便携版的差异：
   * 不含 app/runtime（那是 Windows 版 Python，Linux 上不可执行）
-  * 不含 app/libreoffice（1.6GB，本程序走 WPS 转换，用不到）
+  * 含 app/libreoffice（便携 LibreOffice，供 PDF 预览/转换；Windows 版 1.6GB 的
+    app/libreoffice 需先替换为 aarch64/x86_64 对应架构的便携版，否则会被跳过）
   * 含 wheels/ 离线依赖包，首次运行即可零联网安装
   * 含 字体包/ 全部字体（含 SimSun.ttf）
 
@@ -40,7 +41,7 @@ TOOL_FILES = [
 
 # 需要排除的目录 / 文件
 EXCLUDE_DIRS = {
-    "libreoffice",      # 1.6GB，程序走 WPS 转换，用不到
+    "libreoffice",      # 由 add_libreoffice_tree 单独处理（需设可执行位），不在通用遍历中打包
     "runtime",          # Windows 版 Python
     ".venv",            # 本机开发虚拟环境
     "__pycache__",
@@ -85,6 +86,39 @@ def add_tree(zf, src_dir, arc_root, stats):
             rel = fn if rel_dir == "." else os.path.join(rel_dir, fn)
             arc = "%s/%s" % (arc_root, rel.replace("\\", "/"))
             zf.write(full, arc)
+            stats["count"] += 1
+            stats["bytes"] += os.path.getsize(full)
+
+
+def add_libreoffice_tree(zf, src_dir, arc_root, stats):
+    """把便携 LibreOffice（app/libreoffice，deb 解出后的 opt/libreoffice*/ 结构）加入 zip。
+
+    program/ 下的文件设为可执行位（soffice / soffice.bin 需可执行才能被调用）。
+    说明：部分解压工具会丢失可执行位，故 启动汇编程序.sh 内还会再 chmod 兜底一次。
+    """
+    if not os.path.isdir(src_dir):
+        return
+    for dirpath, dirnames, filenames in os.walk(src_dir):
+        # usr/ 目录是桌面集成（启动器软链 + .desktop），无头转换用不到，且软链在 Windows 上无法 stat，直接跳过
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS and d != "usr"]
+        rel_dir = os.path.relpath(dirpath, src_dir).replace("\\", "/")
+        in_program = rel_dir.endswith("program") or "/program/" in rel_dir
+        for fn in filenames:
+            if fn.endswith(EXCLUDE_SUFFIX) or fn.startswith("."):
+                continue
+            full = os.path.join(dirpath, fn)
+            if os.path.islink(full):  # 跳过软链接（usr/ 已排除，此处为兜底）
+                continue
+            rel = fn if rel_dir == "." else os.path.join(rel_dir, fn)
+            arc = "%s/%s" % (arc_root, rel.replace("\\", "/"))
+            if in_program:
+                info = zipfile.ZipInfo(arc)
+                info.external_attr = 0o100755 << 16
+                info.compress_type = zipfile.ZIP_DEFLATED
+                with open(full, "rb") as f:
+                    zf.writestr(info, f.read())
+            else:
+                zf.write(full, arc)
             stats["count"] += 1
             stats["bytes"] += os.path.getsize(full)
 
@@ -171,6 +205,17 @@ def main():
         before = stats["count"]
         add_tree(zf, app_src, base + "/app", stats)
         print("  + app/（%d 个文件）" % (stats["count"] - before))
+
+        # 2.5) 便携 LibreOffice（国产系统 PDF 预览/转换引擎，免 root）
+        lo_src = os.path.join(ROOT, "app", "libreoffice")
+        if os.path.isdir(os.path.join(lo_src, "opt")):
+            before = stats["count"]
+            add_libreoffice_tree(zf, lo_src, base + "/app/libreoffice", stats)
+            print("  + app/libreoffice（便携 LibreOffice，%d 个文件）" %
+                  (stats["count"] - before))
+        else:
+            print("  [警告] 未找到 app/libreoffice/opt（便携 LibreOffice），"
+                  "国产系统 PDF 预览将不可用")
 
         # 3) 字体包/
         font_src = os.path.join(ROOT, "字体包")

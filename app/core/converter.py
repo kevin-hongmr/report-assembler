@@ -27,6 +27,9 @@ try:
 except ImportError:
     winreg = None
 
+# 程序目录（app/），用于定位随程序集成的便携 LibreOffice（国产系统离线包内，免 root）
+_APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 def _is_exe(p):
     return bool(p) and os.path.isfile(p) and os.access(p, os.X_OK)
@@ -95,6 +98,9 @@ def _find_soffice():
 
     国产系统（麒麟/统信）WPS 不支持命令行转换，LibreOffice 的
     `soffice --headless --convert-to` 是可靠的无头转换方案。
+
+    探测顺序：① 系统 PATH 与常见安装路径 → ② 随程序集成的便携 LibreOffice
+    （国产系统离线包内 app/libreoffice/opt/libreoffice*/program/soffice，免 root）。
     """
     for name in ("soffice", "libreoffice", "soffice.bin"):
         f = shutil.which(name)
@@ -106,6 +112,14 @@ def _find_soffice():
               "C:/Program Files/LibreOffice/program/soffice.exe"):
         if _is_exe(p):
             return p
+    # 随程序集成的便携 LibreOffice（deb 包解出后：app/libreoffice/opt/libreoffice<版本>/program/soffice）
+    bundled_root = os.path.join(_APP_DIR, "libreoffice")
+    for pat in ("opt/libreoffice*/program/soffice",
+                "opt/libreoffice*/program/soffice.bin",
+                "program/soffice", "program/soffice.bin"):
+        for m in glob.glob(os.path.join(bundled_root, pat)):
+            if _is_exe(m):
+                return m
     return None
 
 
@@ -348,6 +362,9 @@ def _run_convert(src, out_dir, fmt):
                 return _convert_with_soffice(soffice, src, out_dir, fmt)
             except Exception as e:
                 errors.append("LibreOffice: " + str(e))
+        else:
+            errors.append("LibreOffice: 未检测到（请安装 LibreOffice，"
+                          "或确认便携版已随离线包部署）")
         wps = detect_engine()
         if wps:
             try:
