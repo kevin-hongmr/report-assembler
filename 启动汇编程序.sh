@@ -133,6 +133,43 @@ else
     log "提示：未检测到 fcitx/ibus 输入法，中文输入可能不可用；可手动 export QT_IM_MODULE=fcitx 后重试。"
 fi
 
+# ---------------------------------------------------------------- 输入法插件自动检测/安装
+# 检测系统是否已有 Qt6 输入法插件（fcitx/fcitx5/ibus）；没有则尽力用 apt 自动安装。
+# 需 sudo；内网无软件源或需密码时会失败，此时只提示、不阻断启动。
+# 失败后写标记文件 .im_install_tried，避免每次启动都重复等待；删除该文件可强制重试。
+ensure_im_plugin() {
+    local im="$1" d
+    for d in /usr/lib/qt6/plugins/platforminputcontexts \
+             /usr/lib/aarch64-linux-gnu/qt6/plugins/platforminputcontexts \
+             /usr/lib/x86_64-linux-gnu/qt6/plugins/platforminputcontexts \
+             /usr/lib64/qt6/plugins/platforminputcontexts; do
+        [ -d "$d" ] && ls "$d"/*.so >/dev/null 2>&1 && return 0   # 已有插件
+    done
+    [ -n "$im" ] || return 0
+    local pkg=""
+    case "$im" in
+        fcitx5) pkg="fcitx5-frontend-qt6" ;;
+        fcitx)  pkg="fcitx-frontend-qt6" ;;
+        ibus)   pkg="ibus-qt6" ;;
+        *)      return 0 ;;
+    esac
+    [ -f "$ROOT/.im_install_tried" ] && return 0
+    if ! command -v sudo >/dev/null 2>&1; then
+        log "提示：未检测到 Qt6 输入法插件且本机无 sudo。请手动执行：sudo apt install $pkg"
+        touch "$ROOT/.im_install_tried" 2>/dev/null
+        return 1
+    fi
+    log "未检测到 Qt6 输入法插件，尝试自动安装 $pkg ..."
+    if sudo -n apt-get install -y -o Acquire::http::Timeout=15 -o Acquire::Retries=0 "$pkg" >/dev/null 2>&1; then
+        log "  已自动安装 $pkg"
+        return 0
+    fi
+    log "  自动安装失败（可能无内网软件源或需密码）。请手动执行：sudo apt install $pkg"
+    touch "$ROOT/.im_install_tried" 2>/dev/null
+    return 1
+}
+ensure_im_plugin "$IM_MODULE"
+
 # ---------------------------------------------------------------- 输入法插件接入
 # pip 安装的 PyQt6 自带一套 Qt6，其插件目录在 <site-packages>/PyQt6/Qt6/plugins 下，
 # 默认不会去搜索系统的 /usr/lib/qt6/plugins。因此即使系统装了 fcitx-frontend-qt6 等
@@ -212,6 +249,33 @@ fix_soffice_exec() {
     find "$lo" -type d -name program -exec chmod -R a+x {} \; 2>/dev/null
 }
 fix_soffice_exec
+
+# ---------------------------------------------------------------- LibreOffice 自动检测/安装
+# 优先用随包便携版，其次系统已装的 LibreOffice；都没有则尽力用 apt 自动安装（需 sudo）。
+# 内网无软件源或需密码时会失败，此时只提示、不阻断启动（PDF 预览/转换将不可用）。
+ensure_libreoffice() {
+    # 1) 随包便携版
+    if find "$ROOT/app/libreoffice/opt" -name soffice -type f 2>/dev/null | head -1 | grep -q .; then
+        return 0
+    fi
+    # 2) 系统已装
+    if command -v soffice >/dev/null 2>&1 || command -v libreoffice >/dev/null 2>&1; then
+        return 0
+    fi
+    # 3) 都没有：尽力自动安装
+    if ! command -v sudo >/dev/null 2>&1; then
+        log "提示：未检测到 LibreOffice 且本机无 sudo。请手动执行：sudo apt install libreoffice-writer"
+        return 1
+    fi
+    log "未检测到 LibreOffice，尝试自动安装 libreoffice-writer ..."
+    if sudo -n apt-get install -y -o Acquire::http::Timeout=15 -o Acquire::Retries=0 libreoffice-writer >/dev/null 2>&1; then
+        log "  已自动安装 libreoffice-writer"
+        return 0
+    fi
+    log "  自动安装失败（可能无内网软件源或需密码）。请手动执行：sudo apt install libreoffice-writer"
+    return 1
+}
+ensure_libreoffice
 
 # ---------------------------------------------------------------- 2. 依赖检测
 deps_ok() {
