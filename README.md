@@ -1,5 +1,20 @@
 # 文档汇编程序 · 使用说明
 
+> ## 📦 本仓库有两个版本，请按系统选用
+>
+> | 版本 | 适用系统 | 源码分支 | 下载 |
+> | --- | --- | --- | --- |
+> | **国产系统专用版** | 银河麒麟 / 统信 UOS 等国产 Linux：aarch64（飞腾、鲲鹏）、x86_64（海光、兆芯） | `guochan` | [Releases](https://github.com/kevin-hongmr/report-assembler/releases) 里的 `..._aarch64.zip` / `..._x86_64.zip` |
+> | **Windows 便携版** | Windows 7 / 10 / 11（64 位） | `main` | [Releases](https://github.com/kevin-hongmr/report-assembler/releases) 里的 `..._便携版.zip` |
+>
+> **两个版本功能完全一致**（同一套汇编引擎），差别只在**转换引擎与运行环境**：
+> - **国产系统版**：内置 Python 依赖与**便携版 LibreOffice**，**完全离线、免 root**，适合政府内网；
+> - **Windows 版**：内置 Python 运行环境，文档转换依赖本机 **WPS Office 专业版 / 政府版**。
+>
+> 下载解压即用，**无需联网、无需另装 Python**。
+
+---
+
 ## 一、软件简介
 
 本程序用于把多份公文汇报材料（Word / WPS 文档）自动汇编成一份排版规范、格式统一的合订本，输出为 `.docx` 文件。适用于政府机关、企事业单位的会议材料汇编场景。
@@ -14,14 +29,16 @@
 
 ## 二、运行环境要求
 
-| 项目     | 要求                                                                  |
-| ------ | ------------------------------------------------------------------- |
-| 操作系统   | Windows 7 / 10 / 11（64 位）；**银河麒麟 / 统信 UOS 等 Linux 桌面**              |
-| 办公软件   | **WPS Office 专业版 / 政府版**（用于把 `.doc`、`.wps` 转换为 `.docx`，以及生成预览）      |
-| Python | **Windows 无需安装**（已内置运行环境）；**Linux 需系统自带 python3**（国产系统离线包已内置依赖 wheel，首次运行本地安装，无需联网） |
-| 字体     | 见下方"字体说明"                                                           |
+| 项目 | Windows 便携版 | 国产系统专用版 |
+| --- | --- | --- |
+| 操作系统 | Windows 7 / 10 / 11（64 位） | 银河麒麟 / 统信 UOS 等国产 Linux |
+| 转换引擎 | **WPS Office 专业版 / 政府版**（负责 `.doc`/`.wps` → `.docx` 及预览） | **随包内置便携版 LibreOffice**（免安装、免联网，开箱即用） |
+| Python | 已内置运行环境，无需安装 | 用系统自带 `python3`；依赖 wheel 随包，首次运行本地安装 |
+| 字体 | 见下方"字体说明" | 同上 |
 
-> ⚠️ **重要：WPS 必须是专业版 / 政府版。** WPS 个人版通常不支持无头命令行转换，会导致 `.doc` / `.wps` 文件无法转换、预览不可用（`.docx` 文件仍可正常汇编）。
+> ⚠️ **Windows 版：WPS 必须是专业版 / 政府版。** WPS 个人版通常不支持无头命令行转换，会导致 `.doc` / `.wps` 文件无法转换、预览不可用（`.docx` 文件仍可正常汇编）。
+>
+> ✅ **国产系统版：无需 WPS，也无需另装 LibreOffice。** 程序在国产 Linux 上改用随包便携版 LibreOffice 完成转换与预览，完全离线、免 root。
 
 ### 字体说明
 
@@ -61,7 +78,12 @@ chmod +x 启动汇编程序.sh
   `sudo apt install python3-pyqt6 python3-docx python3-lxml` 后重新运行脚本。
 - 若 PyQt6 安装成功但仍无法启动（报 `libGL`、`libxcb` 等错误），请补装图形库：
   `sudo apt install libgl1 libegl1 libxkbcommon-x11-0 libdbus-1-3 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-randr0 libxcb-xfixes0`。
-- `.doc` / `.wps` 转换与预览依赖 WPS（Linux 版），请安装 WPS Office for Linux；仅 `.docx` 汇编不依赖 WPS。
+- `.doc` / `.wps` 转换与预览依赖 **LibreOffice**（Linux 版）；WPS for Linux（含 WPS365）不支持命令行转换。
+  **本离线包已随附兼容的便携版 LibreOffice**（麒麟官方源 6.4.2，`libc6 >= 2.29`），开箱即用、免 root。
+  若便携版与本机 glibc 不兼容（启动时预检会提示 `GLIBC_x.y not found`），改装系统版即可（程序优先用系统版）：
+  `sudo apt install libreoffice-writer`。**注意：TDF 官方 aarch64 版 LibreOffice 25.x 要求 glibc ≥ 2.33/2.34，
+  银河麒麟 V10 SP1（glibc 2.31）无法运行**，请勿替换为该版本（详见包内《国产系统运行说明.md》第 5 节）。
+  仅 `.docx` 汇编不依赖任何转换引擎。
 - 若提示"解释器错误"或 `^M`，说明脚本换行符被 Windows 解压工具破坏——请用系统自带归档管理器重新解压（脚本本身为 LF 换行）。
 
 > 完整的国产系统离线部署与排障步骤，请另行查阅包内的 `国产系统运行说明.md`。
@@ -138,13 +160,19 @@ chmod +x 启动汇编程序.sh
 请确认已安装 WPS Office（专业版 / 政府版）。检测机制见"第八节"。
 
 **2. 点击汇编后 `.doc` / `.wps` 文件转换失败？**  
-多半是 WPS 个人版（不支持无头转换）。请改用 WPS 专业版 / 政府版。
+- **Windows**：多半是 WPS 个人版（不支持无头转换）。请改用 WPS 专业版 / 政府版。
+- **Linux / 麒麟 / 统信**：转换由随包便携版 LibreOffice 完成，无需 WPS。若启动时预检提示 `GLIBC_x.y not found`，
+  说明便携引擎与本机 glibc 不兼容，请改装系统版（程序会优先使用它）：`sudo apt install libreoffice-writer`。
 
 **3. 汇编后某些字体不对（如正文变成宋体、标题变了）？**  
 多半是系统缺少「仿宋_GB2312 / 楷体_GB2312 / 方正小标宋简体」等字体。请安装 `app\fonts_bundled\` 下随附字体后重启程序。
 
 **4. 预览空白？**  
-预览依赖 WPS 把成品转为 PDF。若 WPS 个人版或未安装，预览不可用，但 `.docx` 汇编仍可正常进行。
+预览依赖把成品转为 PDF。
+- **Windows**：依赖 WPS（专业版 / 政府版）；若为个人版或未安装，预览不可用，但 `.docx` 汇编仍可正常进行。
+- **Linux / 麒麟 / 统信**：依赖随包便携版 LibreOffice，开箱即用。若汇编产物含图片或嵌入对象且预览始终空白，
+  请检查 `logs/assembler.log` 中的转换报错，并确认输出磁盘剩余空间充足
+  （部分国产系统 `/tmp` 容量很小，程序已改为在输出目录旁建临时工作区）。
 
 **5. 目录页的页码需要更新？**  
 在 WPS 中打开成品，右键目录 → 「更新域」→ 更新整个目录，页码会自动刷新。
