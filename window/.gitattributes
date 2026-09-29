@@ -1,0 +1,5 @@
+# 换行符规范
+# shell 启动/转换脚本必须保持 LF，否则在国产系统/Linux 上会报 "bad interpreter" / 出现 ^M
+*.sh text eol=lf
+# Windows 批处理保持 CRLF
+*.bat text eol=crlf
