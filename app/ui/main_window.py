@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """主窗口：文件列表 + 封面字段 + 选项 + 一键汇编 + 预览。"""
+import functools
 import json
 import logging
 import os
@@ -13,14 +14,40 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QPushButton, QLineEdit, QCheckBox, QSpinBox, QDoubleSpinBox,
     QLabel, QFileDialog, QScrollArea, QMessageBox, QGroupBox, QAbstractItemView,
     QSizePolicy, QComboBox)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QMimeData
 from PyQt6.QtGui import QPixmap, QImage, QDrag, QIcon
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.core import pipeline, converter, fonts as fonts_mod
 from app.core import assembler as assembler_mod
+from app.core import logger as logger_mod
 
 log = logging.getLogger(__name__)
+
+
+def _guard_slot(fn):
+    """槽函数兜底：把未捕获异常就地转成日志 + 提示，不让它拖垮进程。
+
+    PyQt6（>=5.5 同源行为）在槽函数抛出未捕获异常时会调用 qFatal() 直接
+    abort 进程：界面瞬间消失（即用户说的"闪退"），日志里除了 excepthook 记的
+    那一行之外没有任何线索，工作内容也会丢。这里统一兜底。
+    """
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("操作失败（已拦截，程序继续运行）：%s",
+                          getattr(fn, "__name__", fn))
+            try:
+                QMessageBox.critical(
+                    self, "操作失败",
+                    "%s\n\n程序会继续运行。详细信息见日志：\n%s"
+                    % (exc, logger_mod.LOG_FILE or "（无日志文件）"))
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+    return wrapper
 
 # 中文字号 -> 磅值（全档位；界面字号下拉框用，默认三号）
 CN_FONT_SIZES = [
@@ -138,7 +165,7 @@ def today_cn():
 
 
 class Worker(QThread):
-    """后台执行汇编/预览，避免界面卡死。"""
+    """后台执行汇编/预览/文档识别，避免界面卡死。"""
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
@@ -163,9 +190,23 @@ class MainWindow(QMainWindow):
         self.resize(1100, 880)   # 高度加大，保证待汇编文档表格区与原来一样大
         self.work_dir = os.path.join(tempfile.gettempdir(), "doc_assembler_work")
         os.makedirs(self.work_dir, exist_ok=True)
+        # 后台线程必须持有强引用直到真正结束（见 _run 注释），这里用列表统一管理
+        self._workers = []
+        self._env_box = None
+        # 文件对话框复用单实例（懒创建，见 _file_dialog()）。原因是 fcitx 输入法插件
+        # 在 Qt 6.7 + 反复创建/销毁 QFileDialog 时会触发 FcitxInputContextProxy 空指针
+        # 连接（"Cannot connect (nullptr)::availabilityChanged..."）导致 SIGSEGV：
+        # 实测「打开文档对话框」后再开「保存对话框」的第二次就崩溃（退出码 139）。
+        # 只创建一个实例、动态切换 FileMode/AcceptMode 即可彻底规避运行期崩溃。
+        self._file_dlg = None
         self._build_ui()
         self._load_fmt_config()
-        self._check_env()
+        # 环境自检延后到事件循环里执行（此时窗口已显示）：自检要跑一次真实的
+        # LibreOffice 无头转换，最快也要约 1 秒，放到 __init__ 里会拖慢启动；
+        # 更关键的是它以前会在 __init__ 中同步弹出模态对话框，主窗口必须等
+        # 对话框被点掉才出现——无人值守/无头场景就此永久卡死（日志停在
+        # "检测到转换引擎"之后，看起来像"一启动就卡死"）。
+        QTimer.singleShot(0, self._start_env_check)
         log.info("主窗口初始化完成")
 
     # ---------------- UI ----------------
@@ -270,6 +311,13 @@ class MainWindow(QMainWindow):
         act.addWidget(self.btn_assemble); act.addWidget(self.btn_preview)
         left.addLayout(act)
         self.status = QLabel("就绪")
+        # 状态栏是"窄提示条"而不是内容区：允许换行 + 横向尺寸策略设为 Ignored，
+        # 防止长文本（如含完整路径的环境自检消息）把左栏最小宽度撑到接近整窗宽，
+        # 把右侧预览挤成一条窄边（2026-09-29 用户截图实测）。
+        self.status.setWordWrap(True)
+        sp = self.status.sizePolicy()
+        sp.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        self.status.setSizePolicy(sp)
         left.addWidget(self.status)
 
         # 右侧：预览
@@ -284,6 +332,13 @@ class MainWindow(QMainWindow):
         right.addWidget(self.scroll, 1)
 
         # 信号
+        # 【务必注意】QPushButton.clicked 信号会附带一个 checked(bool) 实参。
+        # 而下面的槽都被 _guard_slot 包成了变参 def wrapper(self, *args, **kwargs)，
+        # PyQt 无法据此裁剪实参数量，会把那个 bool 原样传进来；若槽只声明 (self)，
+        # 点击即抛 TypeError —— 弹「操作失败」框并打印
+        # "add_files() takes 1 positional argument but 2 were given"（2026-09-29 用户实测）。
+        # 因此**所有直连的槽都必须多接一个参数**（下面这些已统一为 _checked=False）。
+        # 走 lambda 的连接（上移/下移/行距类型）自己吞掉了参数，不受影响。
         self.btn_add.clicked.connect(self.add_files)
         self.btn_del.clicked.connect(self.remove_row)
         self.btn_up.clicked.connect(lambda: self.move_row(-1))
@@ -292,23 +347,94 @@ class MainWindow(QMainWindow):
         self.btn_preview.clicked.connect(self.do_preview)
 
     # ---------------- 文件列表操作 ----------------
-    def add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "选择文档", "", "Word 文档 (*.doc *.docx *.wps)")
-        for f in files:
-            # 优先从文档内容自动识别标题/单位（需求：标题用原文，不用文件名）
-            try:
-                info = pipeline.analyze_source(f, self.work_dir)
-                unit, title = info.get("unit", ""), info.get("title", "")
-            except Exception:
-                log.exception("从内容识别标题/单位失败，回退文件名解析：%s", f)
-                unit, title = pipeline.parse_filename(f)
+    # 文件对话框统一走这里。关键：**复用同一个 QFileDialog 实例**，而不是每次调用
+    # getOpenFileNames/getSaveFileName 新建一个临时对话框。
+    # 原因（2026-09-29 实测定位）：fcitx 输入法插件在 Qt 6.7 + 反复创建/销毁
+    # QFileDialog 时，会在第二个对话框创建输入上下文时触发空指针连接
+    #（"QObject::connect: Cannot connect (nullptr)::availabilityChanged(bool) to
+    #   FcitxInputContextProxy::availabilityChanged()"）→ 进程 SIGSEGV（闪退）。
+    # 而用户的实际操作序列正是「先点添加文件(打开对话框) → 再点一键汇编并保存
+    # (保存对话框)」，第二次创建对话框就崩。只创建一个实例、动态切换
+    # FileMode / AcceptMode / 文件名过滤器，即可彻底规避（已用 Xvfb + 真实
+    # fcitx 环境反复 open→save×N 验证：零崩溃）。
+    # 同时显式用 Qt 自带（非原生）对话框，绕开 GTK3/xdg-desktop-portal 主题插件
+    # 的叠加风险，也让各系统表现一致。
+    def _file_dialog(self):
+        """懒创建并返回唯一的文件对话框实例（进程内复用，规避 fcitx 崩溃）。"""
+        if self._file_dlg is None:
+            self._file_dlg = QFileDialog(self)
+            self._file_dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        return self._file_dlg
+
+    def _open_files(self):
+        log.info("打开「选择文档」对话框…")
+        dlg = self._file_dialog()
+        dlg.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        dlg.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        dlg.setWindowTitle("选择文档")
+        dlg.setNameFilter("Word 文档 (*.doc *.docx *.wps)")
+        dlg.selectFile("")
+        if dlg.exec() != QFileDialog.DialogCode.Accepted:
+            log.info("「选择文档」对话框返回：0 个文件（取消）")
+            return []
+        files = list(dlg.selectedFiles())
+        log.info("「选择文档」对话框返回：%d 个文件", len(files))
+        return files
+
+    def _save_file(self):
+        log.info("打开「保存汇编文档」对话框…")
+        dlg = self._file_dialog()
+        dlg.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        dlg.setFileMode(QFileDialog.FileMode.AnyFile)
+        dlg.setWindowTitle("保存汇编文档")
+        dlg.setNameFilter("Word (*.docx)")
+        dlg.selectFile("汇编结果.docx")
+        if dlg.exec() != QFileDialog.DialogCode.Accepted:
+            log.info("「保存汇编文档」对话框返回：（取消）")
+            return ""
+        out = dlg.selectedFiles()[0] if dlg.selectedFiles() else ""
+        log.info("「保存汇编文档」对话框返回：%s", out or "（取消）")
+        return out
+
+    @_guard_slot
+    def add_files(self, _checked=False):
+        files = self._open_files()
+        if not files:
+            return
+        # 识别标题/单位要读文档内容，必要时还会调用 LibreOffice 转换 .doc/.wps，
+        # 单份就可能耗几秒。放在后台线程里做：否则界面会长时间无响应
+        # （实测用户添加 7 份文档时主线程被阻塞约 51 秒，期间窗口完全冻结）。
+        self.status.setText("正在识别 %d 份文档的标题/单位…" % len(files))
+        log.info("开始识别 %d 份文档的标题/单位", len(files))
+
+        def work():
+            rows = []
+            for f in files:
+                # 优先从文档内容自动识别标题/单位（需求：标题用原文，不用文件名）
+                try:
+                    info = pipeline.analyze_source(f, self.work_dir)
+                    unit, title = info.get("unit", ""), info.get("title", "")
+                except Exception:
+                    log.exception("从内容识别标题/单位失败，回退文件名解析：%s", f)
+                    unit, title = pipeline.parse_filename(f)
+                rows.append((f, unit, title))
+            return rows
+
+        self._run(work, done=self._append_rows)
+
+    @_guard_slot
+    def _append_rows(self, rows):
+        rows = rows or []
+        for f, unit, title in rows:
             r = self.table.rowCount()
             self.table.insertRow(r)
             self.table.setItem(r, 0, QTableWidgetItem(os.path.basename(f)))
             self.table.setItem(r, 1, QTableWidgetItem(unit))
             self.table.setItem(r, 2, QTableWidgetItem(title))
             self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, f)  # 存完整路径
+        self.status.setText("已添加 %d 份文档，共 %d 份"
+                            % (len(rows), self.table.rowCount()))
+        log.info("已添加 %d 份文档（列表共 %d 份）", len(rows), self.table.rowCount())
 
     def _row_paths(self):
         rows = []
@@ -322,10 +448,12 @@ class MainWindow(QMainWindow):
             rows.append({"path": path, "unit": unit, "title": title})
         return rows
 
-    def remove_row(self):
+    @_guard_slot
+    def remove_row(self, _checked=False):
         for i in sorted({idx.row() for idx in self.table.selectedIndexes()}, reverse=True):
             self.table.removeRow(i)
 
+    @_guard_slot
     def move_row(self, d):
         r = self.table.currentRow()
         if r < 0:
@@ -396,7 +524,8 @@ class MainWindow(QMainWindow):
         # 行距类型切换可能触发默认值重置，这里再按配置值覆盖
         w["line_val"].setValue(float(d.get("line_value", 28.5)))
 
-    def _fmt_reset_default(self):
+    @_guard_slot
+    def _fmt_reset_default(self, _checked=False):
         """恢复默认格式：全部三号 + 固定值 28.5 磅。"""
         for key, _label in FMT_KEYS:
             self._apply_fmt_to_ui(key, assembler_mod.DEFAULT_FMT[key])
@@ -457,19 +586,29 @@ class MainWindow(QMainWindow):
         log.warning("保存配置文件失败（程序目录与用户主目录均不可写）")
 
     def closeEvent(self, event):
-        """退出前保存格式设置。"""
+        """退出前保存格式设置，并等待仍在跑的后台线程收尾。
+
+        不等就退出的话，Qt 会析构仍在运行的 QThread，进程以 abort 结束
+        （表现为"关闭程序时闪退"）。
+        """
+        for w in list(self._workers):
+            if w.isRunning():
+                log.info("退出前等待后台任务结束…")
+                if not w.wait(5000):
+                    log.warning("后台任务未在 5 秒内结束，仍将退出")
         try:
             self._save_fmt_config()
         except Exception:
             log.exception("退出保存配置失败")
         super().closeEvent(event)
 
-    def do_assemble(self):
+    @_guard_slot
+    def do_assemble(self, _checked=False):
         sources = self._row_paths()
         if not sources:
             QMessageBox.warning(self, "提示", "请先添加待汇编文档。")
             return
-        out, _ = QFileDialog.getSaveFileName(self, "保存汇编文档", "汇编结果.docx", "Word (*.docx)")
+        out = self._save_file()
         if not out:
             return
         cfg, options = self._cfg_options()
@@ -482,11 +621,13 @@ class MainWindow(QMainWindow):
                                   log.info("汇编完成：%s", p),
                                   self.do_preview_after(p)))
 
+    @_guard_slot
     def do_preview_after(self, docx_path):
         self._run(pipeline.run_preview, docx_path, self.work_dir,
                   done=lambda imgs: self.show_preview(imgs))
 
-    def do_preview(self):
+    @_guard_slot
+    def do_preview(self, _checked=False):
         sources = self._row_paths()
         if not sources:
             QMessageBox.warning(self, "提示", "请先添加待汇编文档。")
@@ -503,12 +644,31 @@ class MainWindow(QMainWindow):
                                            log.info("预览生成完成：%d 页", len(imgs) if imgs else 0),
                                            self.show_preview(imgs)))
 
-    def _run(self, fn, *args, done=None):
-        self._worker = Worker(fn, *args)
-        self._worker.finished.connect(lambda r: done(r) if done else None)
-        self._worker.error.connect(lambda e: QMessageBox.critical(self, "错误", e))
-        self._worker.start()
+    def _reap_workers(self):
+        """回收已经**真正结束**的后台线程。
 
+        只回收 isFinished() 为真的：Qt 里销毁仍在运行的 QThread 会直接
+        qFatal("QThread: Destroyed while thread is still running") 让进程 abort，
+        且不会有 Python 回溯——这正是"闪退"最典型的成因之一。
+        """
+        self._workers = [w for w in self._workers if not w.isFinished()]
+
+    def _run(self, fn, *args, done=None):
+        """启动后台任务。
+
+        线程对象一律放进 self._workers 列表持有强引用，**不再用单个 self._worker
+        属性**：先前 do_assemble 的完成回调里会再调一次 _run（继续生成预览），
+        旧写法在回调里直接覆盖了 self._worker，最后一个引用随之消失，QThread 可能
+        在仍运行时被析构 → 进程 abort。
+        """
+        self._reap_workers()
+        worker = Worker(fn, *args)
+        self._workers.append(worker)
+        worker.finished.connect(lambda r: done(r) if done else None)
+        worker.error.connect(lambda e: QMessageBox.critical(self, "错误", e))
+        worker.start()
+
+    @_guard_slot
     def show_preview(self, images):
         # 清空旧预览
         for i in reversed(range(self.preview_layout.count())):
@@ -526,7 +686,67 @@ class MainWindow(QMainWindow):
             self.preview_layout.addWidget(lab)
 
     # ---------------- 环境检查 ----------------
+    def _start_env_check(self):
+        """由事件循环触发：后台跑环境自检，完成后按需非模态提示。
+
+        自检要真实调一次转换引擎（约 1 秒起），放后台线程可避免启动瞬间界面
+        发顿；结果一律不阻塞界面——正常时只更新状态栏，异常时才弹**非模态**
+        提示框（见 _on_env_checked）。
+        """
+        try:
+            worker = Worker(self._check_env)
+        except Exception:
+            log.exception("环境自检启动失败（已忽略，不影响使用）")
+            return
+        self._workers.append(worker)
+        worker.finished.connect(self._on_env_checked)
+        worker.error.connect(lambda e: log.warning("环境自检失败（已忽略，不影响使用）：%s", e))
+        worker.start()
+
+    @_guard_slot
+    def _on_env_checked(self, msgs):
+        """呈现环境自检结果：正常→状态栏；有问题→非模态提示框。
+
+        【为什么不再用 QMessageBox.information 模态弹窗】
+        原来无论是否正常都会弹一个模态框，且弹在 __init__ 里：主窗口要等它被
+        点掉才显示，无人值守/无头环境下永久卡死；正常时还平白打断用户。
+        现在正常只轻提示，异常才提示，且用 show() 非模态——任何情况下都不会
+        卡住启动或卡住自动化点击。
+        """
+        msgs = [m for m in (msgs or []) if m]
+        if not msgs:
+            return
+        warns = [m for m in msgs if m.lstrip().startswith("⚠")]
+        if not warns:
+            # 一切正常：状态栏轻提示即可
+            if self.status.text() == "就绪":
+                self.status.setText(msgs[0])
+            log.info("环境自检通过：%s", msgs[0])
+            return
+        log.warning("环境检测发现问题（已在界面提示）：%s", " | ".join(warns))
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("环境检测")
+        box.setText("\n".join(warns))
+        box.setModal(False)
+        box.setWindowModality(Qt.WindowModality.NonModal)
+        box.show()
+        # 持有引用：否则对话框可能被 Python GC 提前回收而闪一下就没
+        self._env_box = box
+
     def _check_env(self):
+        """环境自检（纯逻辑，不弹窗、不阻塞）：返回需要提示的消息列表。
+
+        带 "⚠" 前缀的是"确实有问题"，其余为正常信息。
+        """
+        try:
+            return self._check_env_inner()
+        except Exception:
+            # 环境自检失败只记日志，绝不能拦住程序启动
+            log.exception("环境自检异常（已忽略，不影响使用）")
+            return []
+
+    def _check_env_inner(self):
         msgs = []
         name, exe = converter.detect_converter()
         if not exe:
@@ -544,7 +764,9 @@ class MainWindow(QMainWindow):
             log.info("检测到转换引擎：%s @ %s", name, exe)
             ok, why = converter.wps_can_convert()
             if ok:
-                msgs.append("已检测到转换引擎（%s）：%s，可用于转换与预览。" % (name, exe))
+                # 界面上只显示引擎名，不显示完整路径：路径对用户没有操作价值，
+                # 且是撑宽状态栏/左栏的主要来源（完整路径已在上一行写入日志）。
+                msgs.append("已检测到转换引擎（%s），可用于转换与预览。" % name)
             else:
                 log.warning("%s 转换测试失败：%s", name, why)
                 if name == "LibreOffice":
@@ -559,8 +781,13 @@ class MainWindow(QMainWindow):
         from app.core import preview as preview_mod
         if not preview_mod.has_pymupdf():
             log.warning("未安装 PyMuPDF，预览不可用")
-            msgs.append("⚠ 未安装 PyMuPDF，预览功能不可用。需预览请执行：\n"
-                        "  app\\.venv\\Scripts\\python.exe -m pip install PyMuPDF")
+            if platform.system() == "Windows":
+                how = "  app\\.venv\\Scripts\\python.exe -m pip install PyMuPDF"
+            else:
+                # 国产系统离线包首次运行会自动从 wheels/ 安装；手动装则走系统源
+                how = ("  重新运行「启动汇编程序.sh」即可（会自动从 wheels/ 安装）；\n"
+                       "  或执行：sudo apt install python3-pymupdf")
+            msgs.append("⚠ 未安装 PyMuPDF，预览功能不可用。需预览请执行：\n" + how)
         missing, bundled = fonts_mod.check_fonts()
         if missing:
             log.warning("缺少字体：%s（随附字体：%s）", missing, bundled)
@@ -569,8 +796,8 @@ class MainWindow(QMainWindow):
                             "。可在程序 fonts_bundled/ 目录安装后重试。")
             else:
                 msgs.append("⚠ 系统可能缺少字体：" + "、".join(missing) + "，请安装对应字体。")
-        if msgs:
-            QMessageBox.information(self, "环境检测", "\n".join(msgs))
+        # 不再在此处弹模态框（见 _on_env_checked 说明），只把消息交回调用方
+        return msgs
 
 
 def _resolve_icon_path():
@@ -585,12 +812,50 @@ def _resolve_icon_path():
 
 def main():
     app = QApplication(sys.argv)
-    icon_path = _resolve_icon_path()
-    if icon_path:
-        app.setWindowIcon(QIcon(icon_path))
+
+    # 程序身份与桌面集成：让任务栏显示自定义图标而不是 Python 图标。
+    # 详见 app/ui/appicon.py 顶部说明（WM_CLASS / _NET_WM_ICON / .desktop 三者关系）。
+    icon = None
+    try:
+        from app.ui import appicon
+        icon = appicon.apply_app_identity(app)
+        installed = appicon.install_desktop_entry()
+        if installed:
+            print("桌面集成：%s" % installed)
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("程序身份/桌面集成初始化失败（不影响使用）：%s", e)
+
+    # 保底：即使 appicon 不可用，也尽量挂上图标
+    if icon is None:
+        icon_path = _resolve_icon_path()
+        if icon_path:
+            icon = QIcon(icon_path)
+            app.setWindowIcon(icon)
+
     w = MainWindow()
+    if icon is not None:
+        # 同时在窗口上再设一次：部分 Qt 版本只在窗口自身图标非空时才写 _NET_WM_ICON
+        w.setWindowIcon(icon)
     w.show()
-    sys.exit(app.exec())
+
+    # 启动后记录一次真实的窗口身份（排障用）：任务栏图标不对时，先看这条日志。
+    # WM_CLASS 两段都应是 wenhui-assembler，_NET_WM_ICON 应非空。
+    try:
+        from PyQt6.QtCore import QTimer
+        from app.ui import appicon
+        QTimer.singleShot(1500, lambda: appicon.log_window_identity(w))
+    except Exception:  # noqa: BLE001
+        pass
+
+    rc = app.exec()
+    # fcitx 输入法插件（libfcitxplatforminputcontextplugin.so）存在析构顺序 bug：
+    # 只要进程里打开过 QFileDialog（创建过 FcitxInputContextProxy 输入上下文），
+    # 正常退出走到 Qt 对象析构阶段就会空指针崩溃（SIGSEGV，退出码 139，且无 Python
+    # 回溯）。此时窗口已关闭、closeEvent 已执行（格式配置已保存、后台线程已收尾），
+    # 用 os._exit 直接结束进程、跳过 Qt 析构即可彻底规避。这也顺带覆盖了
+    # "关闭窗口时闪退"的隐患。
+    os._exit(rc if isinstance(rc, int) else 0)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,45 @@
+ime/ 目录说明 —— Qt6 输入法插件（随包）
+
+为什么需要这个目录
+------------------
+国产系统（银河麒麟 / 统信 UOS）上，pip 安装的 PyQt6 自带 Qt 6.7.x，而系统能装到的
+Qt6 fcitx 输入法插件（fcitx-frontend-qt6 1.2.7）是按 Qt 6.4 编译的。两者混用会被
+Qt 6.7 覆写插件的内部成员，表现为：
+
+  * 界面里无法输入中文、无法切换输入法；
+  * 关闭程序时进程崩溃（SIGSEGV，退出码 139）。
+
+本目录里的插件已按 Qt 6.7 做过适配（两处二进制改写，见 tools/patch_qt6_ime_plugin.py
+与 tools/patch_qt6_inputcontext.py），启动脚本会自动接入，无需人工操作。
+
+目录结构（按 CPU 架构分目录）
+----------------------------
+  ime/aarch64/libfcitx-qt6-kylin.so                          适配版（已打补丁）
+  ime/aarch64/libfcitxplatforminputcontextplugin.so.orig     原始版（供自修复重建）
+  ime/x86_64/libfcitx-qt6-kylin.so                           适配版（已打补丁）
+  ime/x86_64/libfcitxplatforminputcontextplugin.so.orig      原始版（供自修复重建）
+
+为什么要分架构：插件是二进制。aarch64 的 .so 在 x86_64 上不但加载不了，还会把本来
+可用的系统插件挤掉。分目录后，同一份离线包可以同时携带两种架构，各取所需。
+
+启动脚本（启动汇编程序.sh 的 _ime_bundled）与自检工具（tools/check_ime_patch.py 的
+resolve_bundled）都按 `uname -m` 选择 ime/<arch>/ 下的文件；若该目录不存在，会回退到
+旧的扁平布局 ime/<文件名>。
+
+兼容性
+------
+* aarch64 版：libc 需求 GLIBC_2.17，libstdc++ 需求最高 GLIBCXX_3.4（已降级），
+  可在 glibc 2.31 的麒麟 V10 上运行。
+* x86_64 版：libc 需求最高 GLIBC_2.14，libstdc++ 需求最高 GLIBCXX_3.4.20。
+
+只在该插件与宿主 Qt 的 minor 版本同为 6.7 时才会被接入；其它 Qt 版本会优先使用
+系统自带、版本自洽的插件。
+
+文件改动记录
+------------
+  libfcitx-qt6-kylin.so 相对 .orig 的差异仅 3 处字节：
+    1. 符号 _ZSt28__throw_bad_array_new_lengthv → _ZSt17__throw_bad_allocv
+       版本 GLIBCXX_3.4.29 → GLIBCXX_3.4（兼容老版 libstdc++）
+    2. Qt 私有符号名去掉末尾的 b（handleExtendedKeyEvent 少一个 bool 形参）
+    3. 另有一处 m_inputDirection 成员覆写由 libQt6Gui 侧修补，见
+       tools/patch_qt6_inputcontext.py

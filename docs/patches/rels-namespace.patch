@@ -1,0 +1,52 @@
+--- a/app/core/assembler.py
++++ b/app/core/assembler.py
+@@ -30,6 +30,13 @@
+ 
+ # 关系（relationships）命名空间，用于图片/编号等外部引用
+ R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
++# .rels 根元素 <Relationships> 及其子元素 <Relationship> 所用的命名空间。
++# 注意：这与 R_NS 不同——R_NS 是 r:id 属性与关系 Type 取值的前缀命名空间，
++# 而 .rels 部件本身属于 OPC 的 package 命名空间。新建 <Relationship> 时若误用
++# R_NS，元素会落到错误命名空间，OPC 解析器（LibreOffice/Word）会将其视为外来
++# 元素忽略，导致 document.xml 的 r:id 悬空、文件被判定为无法加载（预览失败）。
++PKG_R_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
++CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
+ A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+ W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+ V_NS = "urn:schemas-microsoft-com:vml"
+@@ -1583,7 +1590,7 @@
+         ct_root = etree.fromstring(parts["[Content_Types].xml"])
+         for (new_rid, out_rel, data, ext, rtype, is_media) in ctx.media.values():
+             parts["word/" + out_rel] = data
+-            rel = etree.SubElement(rel_root, "{%s}Relationship" % R_NS)
++            rel = etree.SubElement(rel_root, "{%s}Relationship" % PKG_R_NS)
+             rel.set("Id", new_rid)
+             rel.set("Type", rtype or "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image")
+             rel.set("Target", out_rel)
+@@ -1595,7 +1602,7 @@
+             if out_ext:
+                 if not any(etree.QName(d).localname == "Default" and d.get("Extension", "").lower() == out_ext
+                            for d in ct_root):
+-                    d = etree.SubElement(ct_root, "{http://schemas.openxmlformats.org/package/2006/content-types}Default")
++                    d = etree.SubElement(ct_root, "{%s}Default" % CT_NS)
+                     d.set("Extension", out_ext)
+                     d.set("ContentType",
+                           ctx.media_ctype(ext) if is_media
+@@ -1648,7 +1655,7 @@
+             ct_root = etree.fromstring(parts["[Content_Types].xml"])
+             if not any(etree.QName(d).localname == "Override" and d.get("PartName") == "/word/numbering.xml"
+                        for d in ct_root):
+-                ov = etree.SubElement(ct_root, "{http://schemas.openxmlformats.org/package/2006/content-types}Override")
++                ov = etree.SubElement(ct_root, "{%s}Override" % CT_NS)
+                 ov.set("PartName", "/word/numbering.xml")
+                 ov.set("ContentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml")
+             parts["[Content_Types].xml"] = etree.tostring(ct_root, xml_declaration=True, encoding="UTF-8")
+@@ -1658,7 +1665,7 @@
+                 m = re.search(r"rId(\d+)", rel.get("Id", ""))
+                 if m:
+                     rid_max = max(rid_max, int(m.group(1)))
+-            rel = etree.SubElement(rel_root, "{%s}Relationship" % R_NS)
++            rel = etree.SubElement(rel_root, "{%s}Relationship" % PKG_R_NS)
+             rel.set("Id", "rId%d" % (rid_max + 1))
+             rel.set("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering")
+             rel.set("Target", "numbering.xml")

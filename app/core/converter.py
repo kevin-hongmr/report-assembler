@@ -14,6 +14,7 @@ converter.py —— 读取与转换模块（转换引擎按平台选择）
 """
 import os
 import glob
+import re
 import shutil
 import subprocess
 import tempfile
@@ -206,14 +207,21 @@ def _convert_with_com(exe, src, out_dir, fmt):
     raise last
 
 
-def _convert_with(exe, src, out_dir, fmt):
+def _convert_with(exe, src, out_dir, fmt, timeout=None):
     """用 WPS 把 src 转为 .fmt（docx / pdf）。失败抛异常。
+
+    timeout：子进程超时秒数，None 表示用默认 120 秒（供能力自检收紧超时）。
 
     注意：WPS 命令行对含非 ASCII（如中文）的路径常加载失败，
     故先把源文件复制到 ASCII 临时名再转换，输出也落在该 ASCII 临时目录。
     """
     # 复制到 ASCII 临时工作目录，规避中文路径问题
-    work = tempfile.mkdtemp(prefix="conv_")
+    # （同样优先落在输出磁盘，避免 /tmp 为小容量 tmpfs 时写不出结果）
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        work = tempfile.mkdtemp(prefix="conv_", dir=out_dir)
+    except Exception:
+        work = tempfile.mkdtemp(prefix="conv_")
     ext = os.path.splitext(src)[1].lower() or ".docx"
     safe_src = os.path.join(work, "src" + ext)
     try:
@@ -223,7 +231,7 @@ def _convert_with(exe, src, out_dir, fmt):
     safe_out = work
     cmd = [exe, "--headless", "--convert-to", fmt, "--outdir", safe_out, safe_src]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout or 120)
     except subprocess.TimeoutExpired:
         _kill_proc(exe)
         raise RuntimeError("WPS 转换超时（可能不支持无头命令行转换，请使用 WPS 专业版/政府版）")
@@ -296,13 +304,27 @@ def _convert_with_word_com(src, out_dir, fmt):
     raise last
 
 
-def _convert_with_soffice(exe, src, out_dir, fmt):
+def _convert_with_soffice(exe, src, out_dir, fmt, timeout=None):
     """用 LibreOffice 无头转换（Linux/Windows 通用，国产系统推荐）。
+
+    timeout：子进程超时秒数，None 表示用默认 180 秒（供能力自检收紧超时）。
 
     通过 `soffice --headless --convert-to <fmt> --outdir <out> <src>` 完成转换。
     使用独立 UserInstallation 配置目录，避免与系统已运行的 LibreOffice 实例冲突。
+
+    环境处理：随包便携 LibreOffice 把第三方依赖库与主程序放在同一目录
+    （program/），其二进制 RUNPATH 为 $ORIGIN。RUNPATH 对“间接依赖”不生效
+    （如 libclucene-core 找 libclucene-shared 时不继承调用者的 RUNPATH），
+    故这里显式把该目录加入 LD_LIBRARY_PATH，避免 "cannot open shared object file"。
     """
-    work = tempfile.mkdtemp(prefix="lo_")
+    # 临时工作目录优先放在输出目录所在的磁盘：汇编产物可达上百页并含图片，
+    # 转出的 PDF 可能数十 MB，而部分国产系统 /tmp 是容量很小的 tmpfs，
+    # 会导致 LibreOffice 写 PDF 失败（返回码仍为 0，只会静默不产出文件）。
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        work = tempfile.mkdtemp(prefix="lo_", dir=out_dir)
+    except Exception:
+        work = tempfile.mkdtemp(prefix="lo_")
     ext = os.path.splitext(src)[1].lower() or ".docx"
     safe_src = os.path.join(work, "src" + ext)
     try:
@@ -313,8 +335,14 @@ def _convert_with_soffice(exe, src, out_dir, fmt):
     cmd = [exe, "--headless", "--norestore", "--invisible", "--nodefault",
            "-env:UserInstallation=" + user_install,
            "--convert-to", fmt, "--outdir", work, safe_src]
+    env = dict(os.environ)
+    exe_dir = os.path.dirname(os.path.abspath(exe))
+    if exe_dir:
+        prev = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = exe_dir + (":" + prev if prev else "")
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=timeout or 180, env=env)
     except subprocess.TimeoutExpired:
         _kill_proc(exe)
         raise RuntimeError("LibreOffice 转换超时（文档过大或含不支持对象）")
@@ -328,16 +356,26 @@ def _convert_with_soffice(exe, src, out_dir, fmt):
                 target = os.path.join(work, f)
                 break
     if not os.path.isfile(target) or os.path.getsize(target) == 0:
-        raise RuntimeError(f"LibreOffice 转换后未找到有效的 .{fmt} 文件")
+        # LibreOffice 在"能读源文件但写不出结果"时返回码仍为 0（例如输出磁盘
+        # 空间不足、字体缺失致渲染中断），此时 stdout/stderr 是唯一线索，
+        # 必须一并带出，否则用户只看到"未找到 .pdf"而无法定位。
+        detail = ((r.stderr or "") + (r.stdout or "")).strip()
+        raise RuntimeError(
+            f"LibreOffice 转换后未找到有效的 .{fmt} 文件"
+            + (f"（引擎输出：{detail[:400]}）" if detail else
+               "（引擎无输出；请检查输出磁盘剩余空间与字体是否完整）"))
     return target
 
 
-def _run_convert(src, out_dir, fmt):
+def _run_convert(src, out_dir, fmt, timeout=None):
     """转换策略（按平台选择引擎）：
 
     - Windows：WPS COM → WPS 命令行 → Microsoft Word COM（兜底）。
     - Linux（国产系统）：优先 LibreOffice 无头转换；WPS on Linux 不支持命令行
       转换，仅在 LibreOffice 缺失时兜底尝试 WPS 命令行。
+
+    timeout：把子进程超时一路透传给命令行引擎（None 用各引擎默认值）。
+    COM 引擎没有子进程可超时，其自身带重试，不受此参数影响。
     """
     errors = []
     if platform.system() == "Windows":
@@ -348,7 +386,7 @@ def _run_convert(src, out_dir, fmt):
             except Exception as e:
                 errors.append("WPS COM: " + str(e))
             try:
-                return _convert_with(exe, src, out_dir, fmt)
+                return _convert_with(exe, src, out_dir, fmt, timeout=timeout)
             except Exception as e:
                 errors.append("WPS 命令行: " + str(e))
         try:
@@ -359,16 +397,24 @@ def _run_convert(src, out_dir, fmt):
         soffice = _find_soffice()
         if soffice:
             try:
-                return _convert_with_soffice(soffice, src, out_dir, fmt)
+                return _convert_with_soffice(soffice, src, out_dir, fmt,
+                                             timeout=timeout)
             except Exception as e:
-                errors.append("LibreOffice: " + str(e))
+                msg = str(e)
+                # 便携版与发行版二进制常见"glibc 版本不足"故障：进程起不来，
+                # 报错只有动态链接器的 GLIBC_x.y not found，容易被当成"转换失败"。
+                if "GLIBC_" in msg and "not found" in msg:
+                    msg += ("\n提示：该 LibreOffice 与本机 glibc 不兼容（版本过低）。"
+                            "请安装系统版，程序会优先使用它：\n"
+                            "  sudo apt install libreoffice-writer")
+                errors.append("LibreOffice: " + msg)
         else:
             errors.append("LibreOffice: 未检测到（请安装 LibreOffice，"
                           "或确认便携版已随离线包部署）")
         wps = detect_engine()
         if wps:
             try:
-                return _convert_with(wps, src, out_dir, fmt)
+                return _convert_with(wps, src, out_dir, fmt, timeout=timeout)
             except Exception as e:
                 errors.append("WPS 命令行: " + str(e))
     raise RuntimeError("转换失败（已尝试 " + " / ".join(errors) + "）：\n"
@@ -478,27 +524,91 @@ def _normalize_docx_package(src_path, out_dir):
     return out
 
 
+# python-docx 1.1.x 认识的 w:jc 取值（WD_PARAGRAPH_ALIGNMENT）
+_JC_KNOWN = {"left", "right", "center", "both", "distribute"}
+# 等价改写：ECMA-376 第 4 版（Word 2013+ / LibreOffice 6.4+ 导出）用 start/end
+_JC_ALIAS = {"start": "left", "end": "right", "justify": "both"}
+
+_JC_PART_RE = re.compile(
+    r"^word/(document|styles|numbering|header\d*|footer\d*"
+    r"|footnotes|endnotes|comments)\.xml$")
+_JC_RE = re.compile(r'(<w:jc\b[^>]*?w:val=")([A-Za-z]+)(")')
+
+
+def _normalize_docx_quirks(src_path, out_dir):
+    """把 python-docx 不认识的枚举值改写为等价标准值，返回可用 docx 路径。
+
+    根因（2026-09-28 实测）：LibreOffice 6.4 导出 docx 时会把左/右对齐写成
+    `w:jc w:val="start"` / `"end"`（ECMA-376 第 4 版的取值），而 python-docx 1.1.x 的
+    WD_PARAGRAPH_ALIGNMENT 只有 left/right/center/both/distribute，读取时抛
+    `ValueError: WD_PARAGRAPH_ALIGNMENT has no XML mapping for 'start'`，
+    导致 .doc/.wps 转换出来的文档无法汇编（旧版 WPS COM 转换不会这样写，故此前未暴露）。
+
+    未发现需要改写的值时**原样返回 src_path**（零开销，且不改动用户源文件）。
+    """
+    try:
+        zf = zipfile.ZipFile(src_path, "r")
+    except Exception:
+        return src_path
+    changed = {}
+    try:
+        for name in zf.namelist():
+            if not _JC_PART_RE.match(name):
+                continue
+            data = zf.read(name).decode("utf-8", "replace")
+
+            def repl(m):
+                new = _JC_ALIAS.get(m.group(2))
+                if new and new in _JC_KNOWN:
+                    return m.group(1) + new + m.group(3)
+                return m.group(0)
+
+            new_data = _JC_RE.sub(repl, data)
+            if new_data != data:
+                changed[name] = new_data
+        if not changed:
+            return src_path
+        work = tempfile.mkdtemp(prefix="quirk_")
+        out = os.path.join(work, "normalized.docx")
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zo:
+            for item in zf.infolist():
+                payload = changed.get(item.filename)
+                if payload is None:
+                    payload = zf.read(item.filename)
+                else:
+                    payload = payload.encode("utf-8")
+                zo.writestr(item, payload)
+    finally:
+        zf.close()
+    return out
+
+
 def convert_to_docx(src_path, out_dir):
     """src_path(.doc/.docx/.wps) -> .docx 路径。
 
-    .doc/.wps 由 WPS 转换；.docx 若能被 python-docx 正常打开则原样返回，
+    .doc/.wps 由 WPS / LibreOffice 转换；.docx 若能被 python-docx 正常打开则原样返回，
     否则（宏启用 .docm、模板等）先尝试轻量规范化（剥离宏、保留全部文本排版），
-    失败再交 WPS 重存并兜底规范化。
+    失败再交转换引擎重存并兜底规范化。
+
+    无论走哪条路径，最终都会做一次「枚举值归一化」（见 _normalize_docx_quirks），
+    把 LibreOffice / 新版 Office 写出的 python-docx 不认识的属性值改写为等价标准值。
     """
     ext = os.path.splitext(src_path)[1].lower()
     if ext in (".doc", ".wps"):
-        return _run_convert(src_path, out_dir, "docx")
+        return _normalize_docx_quirks(_run_convert(src_path, out_dir, "docx"), out_dir)
     if ext == ".docx":
         if not _docx_needs_normalize(src_path):
-            return src_path
+            return _normalize_docx_quirks(src_path, out_dir)
         # 需要规范化：优先轻量 zip 级（保留文本/排版，剥离宏），失败再交 WPS
         try:
-            return _normalize_docx_package(src_path, out_dir)
+            return _normalize_docx_quirks(
+                _normalize_docx_package(src_path, out_dir), out_dir)
         except Exception as e1:
             try:
                 out = _run_convert(src_path, out_dir, "docx")
                 # WPS 可能仍保留 macroEnabled 标记，再兜底规范化一次
-                return _normalize_docx_package(out, out_dir)
+                return _normalize_docx_quirks(
+                    _normalize_docx_package(out, out_dir), out_dir)
             except Exception as e2:
                 raise RuntimeError("docx 规范化失败：" +
                                    str(e1)[:120] + " | " + str(e2)[:120])
@@ -515,6 +625,10 @@ def wps_can_convert(timeout=20):
 
     ok=True 表示存在可用的转换引擎（Windows 的 WPS，或 Linux 的 LibreOffice）
     且可完成转换；ok=False 时 msg 给出原因，便于界面直接提示用户。
+
+    timeout：自检允许的最长秒数，会一路传到引擎的子进程超时上。
+    （2026-09-29 修：此前该参数被声明却从未使用，引擎内部默认 180 秒，
+    一旦 LibreOffice 变慢，启动自检最多可卡约 3 分钟。）
     """
     name, exe = detect_converter()
     if not exe:
@@ -528,7 +642,7 @@ def wps_can_convert(timeout=20):
     try:
         src = os.path.join(td, "t.docx")
         Document().save(src)
-        out = _run_convert(src, td, "pdf")
+        out = _run_convert(src, td, "pdf", timeout=timeout)
         ok = os.path.isfile(out) and os.path.getsize(out) > 0
         return ok, "" if ok else "转换未生成有效 PDF"
     except Exception as e:

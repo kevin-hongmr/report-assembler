@@ -37,6 +37,18 @@ TOOL_FILES = [
     "tools/convert_to_docx.py",
     "tools/转docx.sh",
     "tools/转docx.bat",
+    # Qt6 中文输入相关：随包提供，便于在目标机上自检/自修复（启动脚本会自动调用）
+    "tools/check_ime_patch.py",
+    "tools/patch_qt6_ime_plugin.py",
+    "tools/patch_qt6_inputcontext.py",
+    # 图标多尺寸生成（预生成的图标已随包，此工具用于更换图标后重新生成）
+    "tools/make_app_icons.py",
+]
+
+# 需要整目录一并打进包的资源（相对项目根）
+RESOURCE_DIRS = [
+    ("assets", "assets"),   # 多尺寸程序图标（任务栏图标依赖，缺了会显示 Python 图标）
+    ("ime", "ime"),         # 适配国产系统的 Qt6 fcitx 输入法插件 + 原始副本（供自修复重建）
 ]
 
 # 需要排除的目录 / 文件
@@ -123,6 +135,51 @@ def add_libreoffice_tree(zf, src_dir, arc_root, stats):
             stats["bytes"] += os.path.getsize(full)
 
 
+def elf_machine(path):
+    """读 ELF 头 e_machine：183 = AArch64，62 = x86-64。失败返回 None。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(20)
+    except Exception:  # noqa: BLE001
+        return None
+    if len(head) < 20 or head[:4] != b"\x7fELF":
+        return None
+    return int.from_bytes(head[18:20], "little")
+
+
+_ARCH_MACHINE = {"aarch64": 183, "x86_64": 62}
+
+
+def find_soffice_bin(lo_src):
+    """在便携 LibreOffice 树里找 soffice.bin。"""
+    for dirpath, _dirnames, filenames in os.walk(lo_src):
+        if "soffice.bin" in filenames:
+            return os.path.join(dirpath, "soffice.bin")
+    return None
+
+
+def check_engine_arch(lo_src, arch):
+    """核验便携引擎架构是否与 --arch 一致。
+
+    这是**易犯且后果严重**的错误：x86_64 包的默认引擎目录是 app/libreoffice（通常放
+    aarch64 版），漏传 --libreoffice-dir 就会打出一个「包名写 x86_64、引擎却是 aarch64」
+    的废包——装机后表现为无法预览、无法转换，且很难从日志看出原因。
+    返回 (是否一致, 提示字符串)。
+    """
+    want = _ARCH_MACHINE.get(arch)
+    so = find_soffice_bin(lo_src)
+    if so is None:
+        return True, "未找到 soffice.bin，跳过架构核验"
+    got = elf_machine(so)
+    if got is None:
+        return True, "无法读取 soffice.bin 架构，跳过核验"
+    name = {183: "aarch64", 62: "x86_64"}.get(got, "未知(%s)" % got)
+    if want is not None and got != want:
+        return False, ("引擎架构不符：包为 %s，引擎却是 %s（%s）"
+                       % (arch, name, os.path.relpath(so, ROOT)))
+    return True, "引擎架构 %s，与 --arch %s 一致" % (name, arch)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", default="aarch64", choices=["aarch64", "x86_64"])
@@ -153,6 +210,24 @@ def main():
     if not os.path.isfile(sh):
         print("!! 缺少 启动汇编程序.sh")
         return 1
+
+    # 前置检查：便携引擎架构必须与 --arch 一致（漏传 --libreoffice-dir 会打出废包）
+    lo_src_chk = os.path.abspath(opts.libreoffice_dir) if opts.libreoffice_dir \
+        else os.path.join(ROOT, "app", "libreoffice")
+    if os.path.isdir(os.path.join(lo_src_chk, "opt")):
+        ok, msg = check_engine_arch(lo_src_chk, arch)
+        if not ok:
+            print("!! %s" % msg)
+            print("   源目录：%s" % lo_src_chk)
+            print("   这类包装到目标机器上会「无法预览、无法转换」，请改用对应架构的引擎目录重打：")
+            print("     x86_64 : python tools/build_linux_package.py --arch x86_64 \\")
+            print("                  --libreoffice-dir build/libreoffice_x86_64/lo")
+            print("     aarch64: python tools/build_linux_package.py --arch aarch64")
+            print("              （默认用 app/libreoffice，即麒麟源重建的 aarch64 便携引擎）")
+            return 1
+        print("便携引擎预检：%s" % msg)
+    else:
+        print("[警告] %s 下没有 opt/，未做引擎预检" % lo_src_chk)
 
     # 同步字体
     copied = sync_fonts()
@@ -226,6 +301,39 @@ def main():
             before = stats["count"]
             add_tree(zf, font_src, base + "/字体包", stats)
             print("  + 字体包/（%d 个文件）" % (stats["count"] - before))
+
+        # 3.5) 资源目录：assets/（多尺寸图标）、ime/（适配版输入法插件）
+        for rel, arc in RESOURCE_DIRS:
+            src = os.path.join(ROOT, rel)
+            if not os.path.isdir(src):
+                print("  [警告] 缺少资源目录 %s/（相关功能可能不可用）" % rel)
+                continue
+            before = stats["count"]
+            add_tree(zf, src, "%s/%s" % (base, arc), stats)
+            print("  + %s/（%d 个文件）" % (rel, stats["count"] - before))
+            if rel == "assets":
+                need = os.path.join(src, "icons", "256.png")
+                if not os.path.isfile(need):
+                    print("  [警告] 缺少 assets/icons/256.png，任务栏图标可能仍显示为 Python 图标。")
+                    print("        可执行：python tools/make_app_icons.py 重新生成")
+            if rel == "ime":
+                # 插件按 CPU 架构分目录（ime/<arch>/），旧扁平布局仍兼容
+                arch_dirs = [d for d in ("aarch64", "x86_64")
+                             if os.path.isdir(os.path.join(src, d))]
+                targets = []
+                if arch_dirs:
+                    print("      随包输入法插件架构：%s" % ", ".join(arch_dirs))
+                    for ad in arch_dirs:
+                        targets.append((os.path.join(src, ad), "ime/%s/" % ad))
+                else:
+                    print("      随包输入法插件：扁平布局（建议改为 ime/<arch>/）")
+                    targets.append((src, "ime/"))
+                for where, label in targets:
+                    for need in ("libfcitx-qt6-kylin.so",
+                                 "libfcitxplatforminputcontextplugin.so.orig"):
+                        if not os.path.isfile(os.path.join(where, need)):
+                            print("  [警告] %s 缺少 %s，该架构下 Qt6 中文输入可能无法自动修复。"
+                                  % (label, need))
 
         # 4) wheels/
         before = stats["count"]

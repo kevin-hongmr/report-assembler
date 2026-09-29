@@ -20,6 +20,11 @@ LIBS_DIR="$ROOT/pylibs"
 REQUIRED="python-docx lxml PyQt6"
 OPTIONAL="PyMuPDF"
 
+# 联网兜底安装时的 pip 选项：政务内网通常既连不上公网、也没有可用代理，
+# pip 默认会「重试 5 次 + 超时 15 秒」，最坏情况要卡好几分钟才报错，
+# 让人以为程序死住了。这里把重试与超时压到最小，几秒内就失败并转入下一方案。
+PIP_NET_OPTS="--timeout 5 --retries 0 --disable-pip-version-check"
+
 log() { printf '%s\n' "$*"; }
 
 # ---------------------------------------------------------------- 1. 探测 Python
@@ -137,14 +142,61 @@ fi
 # 检测系统是否已有 Qt6 输入法插件（fcitx/fcitx5/ibus）；没有则尽力用 apt 自动安装。
 # 需 sudo；内网无软件源或需密码时会失败，此时只提示、不阻断启动。
 # 失败后写标记文件 .im_install_tried，避免每次启动都重复等待；删除该文件可强制重试。
-ensure_im_plugin() {
-    local im="$1" d
-    for d in /usr/lib/qt6/plugins/platforminputcontexts \
+# 判断是否已有与 $im 匹配的 Qt6 输入法插件。
+# 注意：早期版本只看目录里有没有 *.so 就直接认为「已有插件」，过于宽松——
+# 目录里往往只有 Qt 自带的 compose/ibus 插件，fcitx 插件其实并不存在，
+# 结果既不会去装，界面也仍然打不出中文。此处必须按输入法名精确匹配。
+# 随包自带的 ime/ 目录也计入：离线包不依赖 apt 也能提供 fcitx 插件。
+#
+# 随包插件自 2026-09-28 起按 CPU 架构分目录存放：ime/<arch>/<name>。
+# 原因：插件是二进制，aarch64 的 .so 在 x86_64 上不但加载不了，还会把本来
+# 可用的系统插件挤掉。分目录后同一份离线包可同时携带两种架构、各取所需。
+# 旧的扁平布局 ime/<name> 仍作为回退保留。
+_ime_arch_dir() {
+    case "$(uname -m)" in
+        aarch64|arm64) printf '%s' 'aarch64' ;;
+        x86_64|amd64)  printf '%s' 'x86_64' ;;
+        *)             printf '%s' "$(uname -m)" ;;
+    esac
+}
+
+# 解析随包插件路径；找不到则返回非 0（不要用 echo 包命令替换，避免误判）
+_ime_bundled() {
+    local name="$1" d
+    d="$ROOT/ime/$(_ime_arch_dir)"
+    if [ -f "$d/$name" ]; then printf '%s' "$d/$name"; return 0; fi
+    if [ -f "$ROOT/ime/$name" ]; then printf '%s' "$ROOT/ime/$name"; return 0; fi
+    return 1
+}
+
+_has_im_plugin() {
+    local im="$1" d pat
+    case "$im" in
+        fcitx)  pat='libfcitxplatforminputcontextplugin*.so' ;;
+        fcitx5) pat='libfcitx5platforminputcontextplugin*.so' ;;
+        ibus)   pat='libibusplatforminputcontextplugin.so' ;;
+        *)      pat='' ;;
+    esac
+    [ -n "$pat" ] || return 1
+    # 随包自带的适配版插件文件名不同，单独判断
+    if [ "$im" = "fcitx" ] && _ime_bundled libfcitx-qt6-kylin.so >/dev/null 2>&1; then
+        return 0
+    fi
+    for d in "$ROOT/ime" "$ROOT/ime/$(_ime_arch_dir)" \
+             /usr/lib/qt6/plugins/platforminputcontexts \
              /usr/lib/aarch64-linux-gnu/qt6/plugins/platforminputcontexts \
              /usr/lib/x86_64-linux-gnu/qt6/plugins/platforminputcontexts \
              /usr/lib64/qt6/plugins/platforminputcontexts; do
-        [ -d "$d" ] && ls "$d"/*.so >/dev/null 2>&1 && return 0   # 已有插件
+        [ -d "$d" ] || continue
+        # shellcheck disable=SC2086
+        ls $d/$pat >/dev/null 2>&1 && return 0
     done
+    return 1
+}
+
+ensure_im_plugin() {
+    local im="$1" d
+    _has_im_plugin "$im" && return 0   # 已有匹配插件（含随包 ime/）
     [ -n "$im" ] || return 0
     local pkg=""
     case "$im" in
@@ -170,48 +222,111 @@ ensure_im_plugin() {
 }
 ensure_im_plugin "$IM_MODULE"
 
-# ---------------------------------------------------------------- 输入法插件接入
-# pip 安装的 PyQt6 自带一套 Qt6，其插件目录在 <site-packages>/PyQt6/Qt6/plugins 下，
-# 默认不会去搜索系统的 /usr/lib/qt6/plugins。因此即使系统装了 fcitx-frontend-qt6 等
-# 输入法插件，PyQt6 也加载不到、界面仍无法输入中文。
-# 此函数把系统里已装的 Qt6 输入法插件（fcitx/fcitx5/ibus）复制进 PyQt6 自己的插件目录，
-# 使 QT_IM_MODULE 指定的输入法真正生效。
-# 用法：link_im_plugin <python> [PYTHONPATH]  （PYTHONPATH 用于 pylibs 目录安装方案）
-link_im_plugin() {
-    local py="$1" pp="$2"
-    PYTHONPATH="$pp" "$py" - 2>/dev/null <<'PYEOF'
-import os, shutil, sys
-try:
-    import PyQt6
-except ImportError:
-    sys.exit(0)
-pkg = os.path.dirname(os.path.abspath(PyQt6.__file__))
-plug = os.path.join(pkg, "Qt6", "plugins")
-dst = os.path.join(plug, "platforminputcontexts")
-if not os.path.isdir(plug):
-    sys.exit(0)
-os.makedirs(dst, exist_ok=True)
-found = 0
-for d in ("/usr/lib/qt6/plugins/platforminputcontexts",
-          "/usr/lib/aarch64-linux-gnu/qt6/plugins/platforminputcontexts",
-          "/usr/lib/x86_64-linux-gnu/qt6/plugins/platforminputcontexts",
-          "/usr/lib64/qt6/plugins/platforminputcontexts"):
-    if not os.path.isdir(d):
-        continue
-    for fn in os.listdir(d):
-        if not fn.endswith(".so"):
-            continue
-        t = os.path.join(dst, fn)
-        if not os.path.exists(t):
-            try:
-                shutil.copy2(os.path.join(d, fn), t)
-                print("输入法插件：已接入", fn)
-                found = 1
-            except Exception:
-                pass
-if not found:
-    print("提示：未找到系统 Qt6 输入法插件，中文输入可能仍不可用；可执行 sudo apt install fcitx5-frontend-qt6")
-PYEOF
+# ---------------------------------------------------------------- 输入法插件接入与补丁自检
+# 两个问题需要在这里一起解决：
+#
+# 1) 插件位置：pip 安装的 PyQt6 自带一套 Qt6，其插件目录在 <PyQt6>/Qt6/plugins 下，
+#    默认不会去搜索系统的 /usr/lib/qt6/plugins。因此即使系统装了 fcitx-frontend-qt6，
+#    PyQt6 也加载不到、界面仍无法输入中文。需要把插件复制进 PyQt6 自己的插件目录。
+#
+# 2) 版本适配：国产系统上 PyQt6 自带 Qt 6.7，而可获取的 Qt6 fcitx 插件是按 Qt 6.4 编译的。
+#    直接使用会让 Qt 6.7 覆写插件的 m_watcher 成员，表现为「界面无法输入中文、无法切换
+#    输入法」，且关闭程序时崩溃（退出码 139）。随包 ime/ 里已备好适配版插件，并配有
+#    tools/check_ime_patch.py 做**幂等自修复**——离线包用 pip 重装 PyQt6 时会把
+#    libQt6Gui 还原成未打补丁状态，靠这一步自动补回，避免问题复发。
+_pyqt6_dir() {
+    local py="$1" pp="${2:-}"
+    if [ -n "$pp" ]; then
+        PYTHONPATH="$pp" "$py" -c \
+            'import os, PyQt6; print(os.path.dirname(os.path.abspath(PyQt6.__file__)))' 2>/dev/null
+    else
+        "$py" -c \
+            'import os, PyQt6; print(os.path.dirname(os.path.abspath(PyQt6.__file__)))' 2>/dev/null
+    fi
+}
+
+# 判断随包 .so 的 CPU 架构是否与本机一致。
+# 随包插件是「按架构构建」的二进制：aarch64 的 .so 装到 x86_64 的 Qt 上不会被加载，
+# 反而会把本来可用的系统插件挤掉。故跨架构时必须跳过随包插件、改用系统插件。
+_pkg_arch_ok() {
+    local so="$1" got want
+    [ -f "$so" ] || return 1
+    # ELF 头偏移 18 起的 2 字节 = e_machine（小端）：183 = AArch64，62 = x86-64
+    got="$(dd if="$so" bs=1 skip=18 count=2 2>/dev/null | od -An -tu2 2>/dev/null | tr -d ' ')"
+    case "$(uname -m)" in
+        aarch64|arm64) want=183 ;;
+        x86_64|amd64)  want=62 ;;
+        *)             return 1 ;;
+    esac
+    [ "$got" = "$want" ]
+}
+
+setup_qt6_ime() {
+    local py="$1" pp="${2:-}"
+    local pkg
+    pkg="$(_pyqt6_dir "$py" "$pp")"
+    if [ -z "$pkg" ] || [ ! -d "$pkg/Qt6" ]; then
+        log "输入法：未定位到 PyQt6 的 Qt6 目录，跳过插件接入（若界面无法输入中文，请见本文件末尾排查说明）。"
+        return 0
+    fi
+
+    local im="${IM_MODULE:-fcitx}"
+    local pat="" dst="$pkg/Qt6/plugins/platforminputcontexts"
+    case "$im" in
+        fcitx)  pat='libfcitxplatforminputcontextplugin' ;;
+        fcitx5) pat='libfcitx5platforminputcontextplugin' ;;
+        ibus)   pat='libibusplatforminputcontextplugin' ;;
+        *)      log "输入法：未识别输入法 $im，跳过插件接入。"; return 0 ;;
+    esac
+
+    # 随包适配版插件：优先用于 fcitx；仅当 PyQt6 的 Qt 为 6.7.x 时才安装（按该版本头文件适配）
+    local qtver='' bundled=''
+    [ -f "$pkg/Qt6/lib/libQt6Core.so.6" ] && qtver="$(strings "$pkg/Qt6/lib/libQt6Core.so.6" 2>/dev/null | grep -oE '^Qt 6\.[0-9]+\.[0-9]+ \(' | head -1 | grep -oE '6\.[0-9]+\.[0-9]+')"
+    [ "$im" = "fcitx" ] && bundled="$(_ime_bundled libfcitx-qt6-kylin.so 2>/dev/null)"
+    mkdir -p "$dst" 2>/dev/null
+
+    if [ -n "$bundled" ] && [ -n "$qtver" ]; then
+        case "$qtver" in 6.7.*)
+            if ! _pkg_arch_ok "$bundled"; then
+                log "输入法：随包插件为异构架构（本机 $(uname -m)），跳过，改用系统插件。"
+            elif [ ! -f "$dst/$pat.so" ] || ! cmp -s "$bundled" "$dst/$pat.so"; then
+                if cp -f "$bundled" "$dst/$pat.so" 2>/dev/null; then
+                    log "输入法：已接入随包适配版 fcitx 插件（适配 Qt $qtver / $(uname -m)）"
+                fi
+            fi
+            ;;
+        *)
+            log "输入法：PyQt6 的 Qt 为 $qtver，随包插件仅适配 6.7.x，优先使用系统同版本插件。"
+            ;;
+        esac
+    fi
+
+    # 系统插件兜底：PyQt6 插件目录里仍没有对应插件时，从系统目录复制
+    if [ ! -f "$dst/$pat.so" ]; then
+        local d fn
+        for d in /usr/lib/qt6/plugins/platforminputcontexts \
+                 /usr/lib/aarch64-linux-gnu/qt6/plugins/platforminputcontexts \
+                 /usr/lib/x86_64-linux-gnu/qt6/plugins/platforminputcontexts \
+                 /usr/lib64/qt6/plugins/platforminputcontexts; do
+            [ -d "$d" ] || continue
+            for fn in "$d/$pat"*.so; do
+                [ -f "$fn" ] || continue
+                if cp -f "$fn" "$dst/" 2>/dev/null; then
+                    log "输入法：已接入系统插件 $(basename "$fn")"
+                fi
+            done
+        done
+    fi
+
+    # 补丁自检 / 自修复（缺插件时也可从 ime/*.orig 现场重建）
+    if [ -f "$ROOT/tools/check_ime_patch.py" ]; then
+        local out
+        out="$("$py" "$ROOT/tools/check_ime_patch.py" --pyqt6 "$pkg" --root "$ROOT" --repair 2>&1)"
+        printf '%s\n' "$out" \
+            | grep -E '插件补丁|libQt6Gui|^  →|^结论|^存在问题|^  - ' \
+            | sed 's/^/输入法：/' \
+            | while IFS= read -r l; do log "$l"; done
+    fi
 }
 
 # ---------------------------------------------------------------- 字体安装（免 root）
@@ -276,6 +391,51 @@ ensure_libreoffice() {
     return 1
 }
 ensure_libreoffice
+
+# ---------------------------------------------------------------- 转换引擎可用性预检
+# 为什么必须预检：转换引擎是"二进制整包搬运"，可能与本机 glibc 不兼容而**照抄即可启动脚本
+# 却毫无察觉**。真实事故（2026-09）：随包 TDF aarch64 版 LibreOffice 25.8.7 要求 GLIBC 2.34，
+# 而银河麒麟 V10 SP1 只有 2.31 → soffice 永远起不来，程序界面却只表现为"预览空白"，
+# 用户要在 logs/assembler.log 里才能看到 oosplash 的 GLIBC 报错。此处实跑一次 --version，
+# 把结论在启动阶段直接讲清楚。
+check_converter_usable() {
+    local so=""
+    for c in soffice libreoffice; do
+        if command -v "$c" >/dev/null 2>&1; then
+            so="$(command -v "$c")"
+            break
+        fi
+    done
+    if [ -z "$so" ] && [ -d "$ROOT/app/libreoffice/opt" ]; then
+        so="$(find "$ROOT/app/libreoffice/opt" -type f -name soffice 2>/dev/null | head -1)"
+    fi
+    if [ -z "$so" ]; then
+        log "提示：未检测到 LibreOffice，PDF 预览与 .doc/.wps 转换不可用（.docx 汇编不受影响）。"
+        return 0
+    fi
+    local out
+    out="$("$so" --version 2>&1 | head -3)"
+    case "$out" in
+        *LibreOffice*|*OpenOffice*)
+            log "转换引擎：$(printf '%s' "$out" | head -1)"
+            return 0
+            ;;
+    esac
+    log "警告：检测到 LibreOffice（$so）但无法运行："
+    log "      $(printf '%s' "$out" | head -1)"
+    case "$out" in
+        *GLIBC_*)
+            log "      原因：该版本要求的 glibc 高于本机，动态链接器直接拒绝加载。"
+            log "      处理：改装系统版即可（程序优先使用系统路径下的 LibreOffice）："
+            log "        sudo apt install libreoffice-writer"
+            ;;
+        *)
+            log "      处理：可尝试 sudo apt install libreoffice-writer 使用系统版。"
+            ;;
+    esac
+    return 0
+}
+check_converter_usable
 
 # ---------------------------------------------------------------- 2. 依赖检测
 deps_ok() {
@@ -352,7 +512,7 @@ install_required() {
         fi
         log "  离线安装未成功，尝试联网安装（内网环境会失败，属正常现象）..."
     fi
-    run_pip "$py" install $extra $REQUIRED
+    run_pip "$py" install $PIP_NET_OPTS $extra $REQUIRED
 }
 
 install_optional() {
@@ -362,21 +522,31 @@ install_optional() {
     if [ -d "$WHEELS" ]; then
         run_pip "$py" install $extra --no-index --find-links="$WHEELS" $OPTIONAL >/dev/null 2>&1 && return 0
     fi
-    run_pip "$py" install $extra $OPTIONAL >/dev/null 2>&1 && return 0
+    run_pip "$py" install $PIP_NET_OPTS $extra $OPTIONAL >/dev/null 2>&1 && return 0
     return 1
 }
 
 exec_run() {
-    # 启动前把系统 Qt6 输入法插件接入 PyQt6（否则界面无法输入中文）
-    link_im_plugin "$1" "$2"
-    if [ -n "$2" ]; then
-        exec env PYTHONPATH="$2" "$1" app/main.py
-    else
-        exec "$1" app/main.py
-    fi
+    # 启动前把 Qt6 输入法插件接入 PyQt6 并做补丁自检（否则界面无法输入中文、退出会崩溃）
+    setup_qt6_ime "$1" "${2:-}"
+    [ -n "${2:-}" ] && export PYTHONPATH="$2"
+    # 用 exec -a 把本进程的 argv[0] 换成应用 ID。
+    # 直接 `python3 app/main.py` 启动时 argv[0] 是 python3，UKUI 的 panel-daemon
+    # (ukui-panel 3.25) 在按窗口 app-id 匹配不到桌面项时会回退读 /proc/<pid>/cmdline，
+    # 看到 python3 就命中系统自带的 /usr/share/applications/python3.8.desktop
+    # → 任务栏显示 Python 图标（而不是本程序的自定义图标）。
+    # 换成应用 ID 后，cmdline 的 argv[0] 与桌面项文件名一致，可以匹配到
+    # ~/.local/share/applications/wenhui-assembler.desktop。
+    # 注意：不能写成 `exec -a X env ...`——env 会重新 exec 并把 argv[0] 改回去，
+    # 所以这里用 export 传 PYTHONPATH，再把 -a 直接作用在 python 上。
+    exec -a "$DESKTOP_ID" "$1" app/main.py
 }
 
 # ---------------------------------------------------------------- 5. 主流程
+# 桌面环境中的应用 ID：必须与 app/ui/appicon.py 的 APP_ID、
+# ~/.local/share/applications/<ID>.desktop 文件名三者完全一致，否则任务栏取不到自定义图标
+DESKTOP_ID="wenhui-assembler"
+
 mkdir -p "$ROOT/logs" 2>/dev/null || true
 
 # 方案 0：系统 Python 已具备依赖

@@ -194,43 +194,21 @@ def _apply_title_style_run(run):
     rs.set(qn("w:val"), ASM_TITLE_STYLE)
 
 
-def _set_first_line_indent(p, chars=2, size_pt=None):
-    """首行缩进 N 个字符。**两个属性必须同时写**，缺一不可。
-
-    * ``w:firstLineChars = chars*100`` —— 东亚版式「按字符缩进」，WPS / Word 认，
-      随字号自动换算，是成品的权威值；
-    * ``w:firstLine = chars × 字号(pt) × 20`` —— 等值 twips。
-      **LibreOffice 完全忽略 firstLineChars**（实测 LO 6.4：只写 Chars 时首行缩进
-      为 0；只写 firstLine 时得到 32 磅 = 2 个 16 磅字符）。预览/PDF 正是走
-      LibreOffice，只写 Chars 就会出现「成品正常、预览里首行不缩进」。
-      两者在同一段落上数值等价，谁被采纳结果都一样，故并存安全。
-
-    还必须删除 ``w:hanging`` / ``w:hangingChars``（不是置 0，是删掉）：
-      * ``w:hangingChars`` 哪怕写 0，WPS 也会忽略 firstLineChars；
-      * ``w:hanging`` 哪怕写 0，**LibreOffice 也会忽略 firstLine**（两者映射到
-        同一个内部属性，hanging 优先）。实测：firstLine=640 + hanging=0 → 不缩进。
-    悬挂缩进改由「不写 hanging + 显式写 firstLine」抵消样式/编号里的悬挂值。
-    """
+def _set_first_line_indent(p, chars=2):
+    """首行缩进 N 个字符（用 firstLineChars，跨字号准确）。"""
     pPr = p._p.get_or_add_pPr()
     ind = pPr.find(qn("w:ind"))
     if ind is None:
         ind = OxmlElement("w:ind")
         _insert_ppr_child(pPr, ind)
-    for a in ("w:firstLine", "w:hanging", "w:hangingChars"):
+    # 清除可能存在的 twips 缩进，避免冲突
+    for a in ("w:firstLine", "w:hanging"):
         if ind.get(qn(a)) is not None:
             del ind.attrib[qn(a)]
-    try:
-        chars = int(chars or 0)
-    except (TypeError, ValueError):
-        chars = 0
-    try:
-        size = float(size_pt) if size_pt else float(SIZE_BODY)
-    except (TypeError, ValueError):
-        size = float(SIZE_BODY)
-    if size <= 0:
-        size = float(SIZE_BODY)
+    # hangingChars 只要存在（即使为 0）就会让 WPS 忽略 firstLineChars，必须删除
+    if ind.get(qn("w:hangingChars")) is not None:
+        del ind.attrib[qn("w:hangingChars")]
     ind.set(qn("w:firstLineChars"), str(chars * 100))
-    ind.set(qn("w:firstLine"), str(int(round(chars * size * 20))))
 
 
 def _set_exact_line(p, pt=LINE_PT):
@@ -259,14 +237,14 @@ def _add_para(doc, text="", align=WD_ALIGN_PARAGRAPH.LEFT,
     p = doc.add_paragraph()
     p.alignment = align
     if indent_chars is not None:
-        _set_first_line_indent(p, indent_chars, size)
+        _set_first_line_indent(p, indent_chars)
     _set_exact_line(p, line_pt)
     if text:
         run = p.add_run(text)
         _set_run_fonts(run, eastasia=eastasia, ascii_font=ascii_font,
                        hansi=hansi or ascii_font, size=size, bold=bold)
     # 缩进显式置 0（首行按入参，左右/悬挂恒 0），避免继承样式带来的缩进
-    _set_first_line_indent(p, indent_chars if indent_chars is not None else 0, size)
+    _set_first_line_indent(p, indent_chars if indent_chars is not None else 0)
     _zero_horizontal_indents(p)
     return p
 
@@ -307,7 +285,7 @@ def _add_para_runs(doc, runs, level, align=WD_ALIGN_PARAGRAPH.LEFT,
     p = doc.add_paragraph()
     p.alignment = align
     if indent_chars is not None:
-        _set_first_line_indent(p, indent_chars, size)
+        _set_first_line_indent(p, indent_chars)
     _set_line(p, line_mode, line_pt)
     if space_before is not None:
         p.paragraph_format.space_before = space_before
@@ -326,7 +304,7 @@ def _add_para_runs(doc, runs, level, align=WD_ALIGN_PARAGRAPH.LEFT,
         _set_run_fonts(run, eastasia=ea, ascii_font=ascii_font,
                        hansi=ascii_font, size=size, bold=b)
     # 缩进显式置 0（首行按入参，左右/悬挂恒 0），避免继承样式带来的缩进
-    _set_first_line_indent(p, indent_chars if indent_chars is not None else 0, size)
+    _set_first_line_indent(p, indent_chars if indent_chars is not None else 0)
     _zero_horizontal_indents(p)
     return p
 
@@ -374,7 +352,7 @@ def _add_heading_para(doc, runs, level, indent_chars=2):
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.LEFT
     if indent_chars:
-        _set_first_line_indent(p, indent_chars, size)
+        _set_first_line_indent(p, indent_chars)
     _set_exact_line(p, LINE_PT)
     p.paragraph_format.space_before = Pt(0)
     p.paragraph_format.space_after = Pt(0)
@@ -1051,8 +1029,7 @@ def build_body(document, materials, options, ctx, fmt=None):
             if lvl == "empty":
                 _apply_para_uniform(para, indent=0,
                                     line_mode=fmt["body"]["line_mode"],
-                                    line_value=fmt["body"]["line_value"],
-                                    size_pt=fmt["body"]["size"])
+                                    line_value=fmt["body"]["line_value"])
                 continue
             if lvl == "h3":
                 # 三级标题（1. / （1）/ ① 等编号开头）：按用户要求保留原文格式，
@@ -1063,16 +1040,14 @@ def build_body(document, materials, options, ctx, fmt=None):
             if lvl in ("h1", "h2"):
                 f = fmt[lvl]
                 _apply_para_uniform(para, indent=2,
-                                    line_mode=f["line_mode"], line_value=f["line_value"],
-                                    size_pt=f["size"])
+                                    line_mode=f["line_mode"], line_value=f["line_value"])
                 # 一级/二级标题：左对齐（不再设大纲级别——旧版会使 h1/h2 进入目录）
                 para.alignment = WD_ALIGN_PARAGRAPH.LEFT
             else:  # body
                 f = fmt["body"]
                 indent = 0 if _is_salutation(p.text) else 2
                 _apply_para_uniform(para, indent=indent,
-                                    line_mode=f["line_mode"], line_value=f["line_value"],
-                                    size_pt=f["size"])
+                                    line_mode=f["line_mode"], line_value=f["line_value"])
                 # 正文：两段对齐
                 para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             _apply_clone_fonts(para, lvl, sizes)
@@ -1306,37 +1281,21 @@ def _remap_block_refs(clone, src_dx, ctx):
             if pPr is not None:
                 pPr.remove(np)
     # 样式引用：w:pStyle / w:rStyle（含表格单元格内段落）与 w:tblStyle
-    #
-    # 与上面 numId 同理：源文档可能引用自身 styles.xml 里**并不存在**的样式
-    # （WPS 转换常见，例如段落引用 s1_Normal，而源 styles.xml 从未定义它）。
-    # 这种悬空引用 Word / WPS 静默容忍，但 LibreOffice（本程序预览与 PDF
-    # 导出的引擎）会据此丢弃该段落的**直接 w:ind**——首行缩进/左缩进整段失效，
-    # 公文版式直接走样。解析不到就删除该引用，段落回落到默认样式，
-    # 与 Word 下的视觉效果一致。
     for tag in ("pStyle", "rStyle"):
         for el in list(clone.iter(qn("w:" + tag))):
             v = el.get(qn("w:val"))
-            if not v:
-                continue
-            nv = ctx.register_style(src_dx, v)
-            if nv:
-                el.set(qn("w:val"), nv)
-            else:
-                par = el.getparent()
-                if par is not None:
-                    par.remove(el)
+            if v:
+                nv = ctx.register_style(src_dx, v)
+                if nv:
+                    el.set(qn("w:val"), nv)
     for tp in list(clone.iter(qn("w:tblPr"))):
         ts = tp.find(qn("w:tblStyle"))
-        if ts is None:
-            continue
-        v = ts.get(qn("w:val"))
-        if not v:
-            continue
-        nv = ctx.register_style(src_dx, v)
-        if nv:
-            ts.set(qn("w:val"), nv)
-        else:
-            tp.remove(ts)
+        if ts is not None:
+            v = ts.get(qn("w:val"))
+            if v:
+                nv = ctx.register_style(src_dx, v)
+                if nv:
+                    ts.set(qn("w:val"), nv)
 
 
 def _cell_style_chain(info, p_el):
@@ -1494,35 +1453,32 @@ def _zero_horizontal_indents(para):
     2 字符、2.38 厘米、6 字符等）与编号定义里的缩进；删除这些属性会让样式/编号的
     缩进重新生效，表现为「整段缩进 N 个字符」。
 
-    但 w:hanging / w:hangingChars 必须**删除**而不是显式置 0（见 _set_first_line_indent）：
-      - WPS：w:hangingChars 只要存在（哪怕 0）就会让 firstLineChars 失效 → 首行缩进整体丢失；
-      - LibreOffice：w:hanging 只要存在（哪怕 0）就会让 firstLine 失效 → 预览里首行不缩进。
-    悬挂缩进因此统一由 _set_first_line_indent 显式写 firstLine 来抵消样式/编号里的悬挂值
-    （样式链上的 hangingChars 已在 _patch_package 并入样式/编号时统一剥离）。
+    但 w:hangingChars 是唯一例外：实测 WPS 里只要 w:ind 上存在 hangingChars
+    属性（哪怕显式写 0），firstLineChars 就会被忽略 → 首行缩进整体失效
+    （Phase 12 把 hanging/hangingChars 也显式置 0 后引入的回归）。
+    而 w:hanging="0"（twips）不影响 firstLineChars。因此：
+      - hanging     → 显式置 0（抵消样式/编号的悬挂缩进）
+      - hangingChars → 删除属性（绝不能写 0）；样式链上的 hangingChars 已在
+        _patch_package 并入样式/编号时统一剥离，保证不会从样式继承回来。
     """
     pPr = para._p.get_or_add_pPr()
     ind = pPr.find(qn("w:ind"))
     if ind is None:
         ind = OxmlElement("w:ind")
         _insert_ppr_child(pPr, ind)
-    for a in ("w:left", "w:leftChars", "w:right", "w:rightChars"):
+    for a in ("w:left", "w:leftChars", "w:right", "w:rightChars", "w:hanging"):
         ind.set(qn(a), "0")
-    for a in ("w:hanging", "w:hangingChars"):
-        if ind.get(qn(a)) is not None:
-            del ind.attrib[qn(a)]
+    if ind.get(qn("w:hangingChars")) is not None:
+        del ind.attrib[qn("w:hangingChars")]
 
 
-def _apply_para_uniform(para, indent=2, line_mode="exact", line_value=LINE_PT, size_pt=None):
+def _apply_para_uniform(para, indent=2, line_mode="exact", line_value=LINE_PT):
     """统一正文级段落：行距（默认固定 28.5 磅，可调倍数/固定值）、段前段后 0、
-    首行缩进 indent 字符、左右/悬挂缩进 0。表格单元格与图片段不走此函数。
-
-    size_pt 为该段落实际使用的字号（磅），用于把「N 字符缩进」折算成等值 twips
-    （LibreOffice 只认 twips，见 _set_first_line_indent）。
-    """
+    首行缩进 indent 字符、左右/悬挂缩进 0。表格单元格与图片段不走此函数。"""
     _set_line(para, line_mode, line_value)
     para.paragraph_format.space_before = Pt(0)
     para.paragraph_format.space_after = Pt(0)
-    _set_first_line_indent(para, indent, size_pt)
+    _set_first_line_indent(para, indent)
     _zero_horizontal_indents(para)
 
 
@@ -1735,7 +1691,6 @@ def _patch_package(output_path, ctx):
         # 文字断行（根因：组合汇编下工贸表列宽收缩）。统一跳过，不并入，
         # 输出仍以原有的 Normal/TableNormal 等为准。
         existing_defaults = set()
-        native_defaults = {}   # (type, name) -> 输出原生默认样式的 styleId
         for s in st_root:
             if etree.QName(s).localname != "style":
                 continue
@@ -1747,57 +1702,9 @@ def _patch_package(output_path, ctx):
                     nv = c.get(qn("w:val"))
                     if nv:
                         existing_defaults.add((stype, nv))
-                        _sid = s.get(qn("w:styleId"))
-                        if _sid:
-                            native_defaults[(stype, nv)] = _sid
                     break
         # 追加所有需要并入的样式（新 styleId），并修正内部基于/链接/后续引用
         old2new = {(sdx, oid): nid for (sdx, oid, nid) in ctx._styles_needed}
-        # 输出 styles.xml 里**原生已存在**的 styleId：源样式的 basedOn/link/next
-        # 若指向它们（如 Normal / DefaultParagraphFont），引用可以直接保留。
-        native_ids = set()
-        for _s in st_root:
-            if etree.QName(_s).localname == "style":
-                _sid = _s.get(qn("w:styleId"))
-                if _sid:
-                    native_ids.add(_sid)
-
-        def _would_skip(_src_el):
-            """该源样式是否会因「与输出默认样式同名同 type」而被跳过不并入。"""
-            _t = _src_el.get(qn("w:type"))
-            _n = None
-            for _c in _src_el:
-                if etree.QName(_c).localname == "name":
-                    _n = _c.get(qn("w:val"))
-                    break
-            return bool(_t and _n and (_t, _n) in existing_defaults)
-
-        # 预扫描：① 真正会被并入的 styleId 集合；② 「被跳过样式的重定向表」。
-        #
-        # 关键：_remap_block_refs 早已把段落的 w:pStyle 改写成新 styleId，
-        # 而被跳过的样式（源 Normal 与输出默认样式同名同 type）最终并不会写进
-        # styles.xml —— 于是正文里就留下一批**悬空引用**。Word/WPS 静默容忍，
-        # LibreOffice（本程序预览/PDF 导出引擎）则会据此丢弃段落的直接 w:ind，
-        # 导致首行缩进整段失效。这类样式与输出原生默认样式语义等价，
-        # 因此把引用重定向过去，既不留悬空引用，也不改变版式语义。
-        emitted_ids = set()
-        redirect = {}          # 被跳过样式的新 id -> 输出原生默认样式 id
-        for (src_dx, old_id, new_id) in ctx._styles_needed:
-            _se = ctx._src_styles(src_dx)["styles"].get(old_id)
-            if _se is None:
-                continue
-            _t = _se.get(qn("w:type"))
-            _n = None
-            for _c in _se:
-                if etree.QName(_c).localname == "name":
-                    _n = _c.get(qn("w:val"))
-                    break
-            _k = (_t, _n) if (_t and _n) else None
-            if _k and _k in existing_defaults:
-                redirect[new_id] = native_defaults.get(_k, "Normal")
-            else:
-                emitted_ids.add(new_id)
-
         for (src_dx, old_id, new_id) in ctx._styles_needed:
             src_el = ctx._src_styles(src_dx)["styles"].get(old_id)
             if src_el is None:
@@ -1827,70 +1734,20 @@ def _patch_package(output_path, ctx):
             for ind_el in new_el.iter(qn("w:ind")):
                 if ind_el.get(qn("w:hangingChars")) is not None:
                     del ind_el.attrib[qn("w:hangingChars")]
-            # 引用改写：能解析到的重映射；指向输出原生样式（Normal 等）的保留；
-            # 其余（源未定义 / 指向被跳过的样式）一律删除，避免悬空引用让
-            # LibreOffice 丢弃段落直接 w:ind（首行缩进失效）。
-            _drop = []
             for child in new_el:
                 ct = etree.QName(child).localname
                 if ct in ("basedOn", "link", "next"):
                     ref = child.get(qn("w:val"))
-                    if not ref:
-                        continue
-                    if (src_dx, ref) in old2new:
-                        _nid = old2new[(src_dx, ref)]
-                        if _nid in emitted_ids:
-                            child.set(qn("w:val"), _nid)
-                        elif _nid in redirect:
-                            child.set(qn("w:val"), redirect[_nid])
-                        else:
-                            _drop.append(child)
-                    elif ref not in native_ids:
-                        _drop.append(child)
+                    if ref and (src_dx, ref) in old2new:
+                        child.set(qn("w:val"), old2new[(src_dx, ref)])
                 elif ct == "tblPr":
                     # 表格样式内部还可能引用其它表格样式（w:tblStyle），同样重映射
                     ts = child.find(qn("w:tblStyle"))
                     if ts is not None:
                         ref = ts.get(qn("w:val"))
-                        if ref:
-                            if (src_dx, ref) in old2new:
-                                _nid = old2new[(src_dx, ref)]
-                                if _nid in emitted_ids:
-                                    ts.set(qn("w:val"), _nid)
-                                elif _nid in redirect:
-                                    ts.set(qn("w:val"), redirect[_nid])
-                                else:
-                                    _drop.append(ts)
-                            elif ref not in native_ids:
-                                _drop.append(ts)
-            for _el in _drop:
-                _par = _el.getparent()
-                if _par is not None:
-                    _par.remove(_el)
+                        if ref and (src_dx, ref) in old2new:
+                            ts.set(qn("w:val"), old2new[(src_dx, ref)])
             st_root.append(new_el)
-        # 最后一道保险：把正文 / 页眉页脚里指向「已被跳过样式」的引用，统一
-        # 重定向到输出原生默认样式（源 Normal → 输出 Normal）。确保整个包中
-        # 不存在任何解析不到的样式引用——LibreOffice 对悬空 pStyle 的报复
-        # 就是丢弃该段落的直接 w:ind（首行缩进失效）。
-        if redirect:
-            for _pn in list(parts):
-                if _pn != "word/document.xml" and not (
-                        (_pn.startswith("word/header") or _pn.startswith("word/footer"))
-                        and _pn.endswith(".xml")):
-                    continue
-                try:
-                    _rt = etree.fromstring(parts[_pn])
-                except Exception:
-                    continue
-                _hit = 0
-                for _tag in ("pStyle", "rStyle", "tblStyle"):
-                    for _el in _rt.iter(qn("w:" + _tag)):
-                        _v = _el.get(qn("w:val"))
-                        if _v in redirect:
-                            _el.set(qn("w:val"), redirect[_v])
-                            _hit += 1
-                if _hit:
-                    parts[_pn] = etree.tostring(_rt, xml_declaration=True, encoding="UTF-8")
         parts[styles_path] = etree.tostring(st_root, xml_declaration=True, encoding="UTF-8")
 
     # ---- settings.xml：采用首个源的完整设置（含 WPS 文档网格/行距兼容标志，
