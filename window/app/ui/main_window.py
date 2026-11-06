@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
     QTableWidgetItem, QPushButton, QLineEdit, QCheckBox, QSpinBox, QDoubleSpinBox,
     QLabel, QFileDialog, QScrollArea, QMessageBox, QGroupBox, QAbstractItemView,
-    QSizePolicy, QComboBox)
+    QSizePolicy, QComboBox, QRadioButton)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData
 from PyQt6.QtGui import QPixmap, QImage, QDrag, QIcon
 
@@ -218,6 +218,12 @@ class MainWindow(QMainWindow):
         self.chk_page = QCheckBox("每份材料另起一页")
         self.chk_page.setChecked(True)
         ov.addWidget(self.chk_signoff); ov.addWidget(self.chk_page)
+        # 材料标题格式（二选一）
+        ov.addWidget(QLabel("材料标题格式："))
+        self.rb_main_sub = QRadioButton("正副标题格式（标题 + 单位）")
+        self.rb_unit_report = QRadioButton("某某单位汇报材料（单标题）")
+        self.rb_main_sub.setChecked(True)
+        ov.addWidget(self.rb_main_sub); ov.addWidget(self.rb_unit_report)
 
         # 封面与目录、选项：并排显示（省垂直空间，保证表格区域大小）
         cover_opts_row = QHBoxLayout()
@@ -351,6 +357,8 @@ class MainWindow(QMainWindow):
         options = {
             "remove_signoff": self.chk_signoff.isChecked(),
             "each_material_new_page": self.chk_page.isChecked(),
+            # 材料标题格式：正副标题 / 「某某单位汇报材料」
+            "title_mode": "unit_report" if self.rb_unit_report.isChecked() else "main_sub",
         }
         return cfg, options
 

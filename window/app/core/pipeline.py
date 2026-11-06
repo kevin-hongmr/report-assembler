@@ -39,7 +39,8 @@ def run_assemble(sources, output_path, cfg, options, work_dir, fmt=None):
     """
     sources: list of dict {path, unit, title}（unit/title 为空时从内容自动识别）
     cfg: {cover_title, date_text, cover_title_size}
-    options: {remove_signoff, each_material_new_page}
+    options: {remove_signoff, each_material_new_page,
+              title_mode: "main_sub"(正副标题) | "unit_report"(「某某单位汇报材料」)}
     fmt: 界面可调格式 {toc|body|h1|h2: {size, line_mode, line_value}}（可选）
     返回最终 docx 路径。.doc/.wps 由 WPS 转 docx，.docx 直接（或规范化后）汇编。
     """

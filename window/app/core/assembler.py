@@ -145,23 +145,41 @@ def _set_run_fonts(run, eastasia=None, ascii_font=None, hansi=None, size=None, b
     sp.set(qn("w:val"), "0")
 
 
-# 材料标题字符样式 id：标题字体/字号/加粗走样式而非直接格式。
+# 材料标题段落样式：标题字体/字号/加粗走样式而非直接格式。
 # 关键：WPS『更新目录域』会把标题 run 上的**直接**字体名复制进目录条目
 # （实测条目 rPr 出现 rFonts=方正小标宋简体，导致目录内容不是正文字体），
-# 但**样式级**格式不会传播——故标题用字符样式，目录条目即保持 toc 样式（仿宋三号）。
-ASM_TITLE_STYLE = "AsmTitle"
+# 但**样式级**格式不会传播——故标题用段落样式、run 不写直接字体，
+# 目录条目即保持 toc 样式（仿宋三号）。
+ASM_TITLE_STYLE = "AsmTitle"          # 内部 styleId（ASCII，兼容性最好）
+ASM_TITLE_STYLE_NAME = "汇编标题"      # 样式窗格中显示的名称（基于「正文」）
 
 
-def _add_title_char_style(document):
-    """定义材料标题字符样式（方正小标宋简体、二号、**不加粗**、字符间距标准）。"""
+def _add_title_style(document):
+    """定义材料标题段落样式「汇编标题」（样式基于「正文」= Normal）。
+
+    格式：方正小标宋简体、二号、不加粗、居中、段前段后 0、字符间距标准。
+    说明：早先用字符样式，是为了避免 WPS「更新目录域」把标题 run 的直接字体
+    复制进目录条目；改用段落样式后，标题 run 上不写任何直接字体，同样不会传播。
+    """
     styles_el = document.styles.element
     for st in styles_el.findall(qn("w:style")):
         if st.get(qn("w:styleId")) == ASM_TITLE_STYLE:
             styles_el.remove(st)
     st = OxmlElement("w:style")
-    st.set(qn("w:type"), "character")
+    st.set(qn("w:type"), "paragraph")
     st.set(qn("w:styleId"), ASM_TITLE_STYLE)
-    nm = OxmlElement("w:name"); nm.set(qn("w:val"), ASM_TITLE_STYLE); st.append(nm)
+    st.set(qn("w:customStyle"), "1")
+    nm = OxmlElement("w:name"); nm.set(qn("w:val"), ASM_TITLE_STYLE_NAME); st.append(nm)
+    # 样式基于「正文」（Normal）
+    bo = OxmlElement("w:basedOn"); bo.set(qn("w:val"), "Normal"); st.append(bo)
+    # 段落属性：居中、段前段后 0
+    pPr = OxmlElement("w:pPr")
+    sp0 = OxmlElement("w:spacing")
+    sp0.set(qn("w:before"), "0"); sp0.set(qn("w:after"), "0")
+    pPr.append(sp0)
+    jc = OxmlElement("w:jc"); jc.set(qn("w:val"), "center"); pPr.append(jc)
+    st.append(pPr)
+    # 字符属性：字体/字号/不加粗/字距 0
     rPr = OxmlElement("w:rPr")
     rf = OxmlElement("w:rFonts")
     for a in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
@@ -171,20 +189,20 @@ def _add_title_char_style(document):
     b = OxmlElement("w:b"); b.set(qn("w:val"), "0"); rPr.append(b)
     bcs = OxmlElement("w:bCs"); bcs.set(qn("w:val"), "0"); rPr.append(bcs)
     sp = OxmlElement("w:spacing"); sp.set(qn("w:val"), "0"); rPr.append(sp)
-    sz = OxmlElement("w:sz"); sz.set(qn("w:val"), str(SIZE_TITLE * 2)); rPr.append(sz)
-    szcs = OxmlElement("w:szCs"); szcs.set(qn("w:val"), str(SIZE_TITLE * 2)); rPr.append(szcs)
+    sz = OxmlElement("w:sz"); sz.set(qn("w:val"), str(int(SIZE_TITLE) * 2)); rPr.append(sz)
+    szcs = OxmlElement("w:szCs"); szcs.set(qn("w:val"), str(int(SIZE_TITLE) * 2)); rPr.append(szcs)
     st.append(rPr)
     styles_el.append(st)
 
 
-def _apply_title_style_run(run):
-    """给材料标题 run 挂字符样式（不写直接 rPr 字体，避免更新目录域时字体被复制进条目）。"""
-    rPr = run._element.get_or_add_rPr()
-    rs = rPr.find(qn("w:rStyle"))
-    if rs is None:
-        rs = OxmlElement("w:rStyle")
-        rPr.insert(0, rs)
-    rs.set(qn("w:val"), ASM_TITLE_STYLE)
+def _apply_title_style(paragraph):
+    """给材料标题段落套用「汇编标题」段落样式（不写 run 级直接字体）。"""
+    pPr = paragraph._p.get_or_add_pPr()
+    ps = pPr.find(qn("w:pStyle"))
+    if ps is None:
+        ps = OxmlElement("w:pStyle")
+        pPr.insert(0, ps)
+    ps.set(qn("w:val"), ASM_TITLE_STYLE)
 
 
 def _set_first_line_indent(p, chars=2):
@@ -277,6 +295,8 @@ def _add_para_runs(doc, runs, level, align=WD_ALIGN_PARAGRAPH.LEFT,
     ea, ascii_font, size, bold_default = _level_fonts(level, sizes)
     p = doc.add_paragraph()
     p.alignment = align
+    if level == "title":
+        _apply_title_style(p)      # 材料标题：字体/字号/居中走「汇编标题」段落样式
     if indent_chars is not None:
         _set_first_line_indent(p, indent_chars)
     _set_line(p, line_mode, line_pt)
@@ -289,9 +309,8 @@ def _add_para_runs(doc, runs, level, align=WD_ALIGN_PARAGRAPH.LEFT,
             continue
         run = p.add_run(txt)
         if level == "title":
-            # 材料标题：字体/字号/加粗走字符样式（见 ASM_TITLE_STYLE 注释——
-            # 直接格式会被 WPS 更新目录域时复制进目录条目）
-            _apply_title_style_run(run)
+            # 材料标题：字体/字号/加粗由段落样式「汇编标题」提供，run 不写直接字体
+            # （直接格式会被 WPS 更新目录域时复制进目录条目）
             continue
         b = bold if bold_default is None else bold_default
         _set_run_fonts(run, eastasia=ea, ascii_font=ascii_font,
@@ -375,6 +394,34 @@ def _add_page_break(doc):
     br = OxmlElement("w:br")
     br.set(qn("w:type"), "page")
     r._r.append(br)
+
+
+def _add_section_break(doc):
+    """插入一个分节符（新节、新页起始），沿用页面设置、页眉页脚与页码连续性。
+
+    用分节符而非分页符：每份材料成为独立"节"，便于按单位单独设置页面
+    （页码、页眉页脚等），排版控制更精细。
+    """
+    sec = doc.add_section(WD_SECTION.NEW_PAGE)
+    _setup_section(sec)          # 新节同样套用 3cm/2.7cm 页边距与文档网格
+    sectPr = sec._sectPr
+
+    # 沿用正文节（第 2 节）的页眉/页脚引用：add_section 不会自动复制，
+    # 否则第 2 份材料之后页面上不再显示页码。
+    try:
+        body_sectPr = doc.sections[1]._sectPr
+        refs = [e for e in body_sectPr
+                if etree.QName(e).localname in ("headerReference", "footerReference")]
+        for ref in reversed(refs):
+            sectPr.insert(0, copy.deepcopy(ref))
+    except Exception:
+        pass
+
+    pg = sectPr.find(qn("w:pgNumType"))
+    if pg is not None and pg.get(qn("w:start")) is not None:
+        # 去掉 start，避免每份材料页码重新从 1 开始（保持连续编号）
+        del pg.attrib[qn("w:start")]
+    return sec
 
 
 def _add_page_field(paragraph):
@@ -972,15 +1019,22 @@ def build_body(document, materials, options, ctx, fmt=None):
     sizes = {k: fmt[k]["size"] for k in ("body", "h1", "h2")}
     from docx.text.paragraph import Paragraph
     out_body = document.element.body
+    # 标题类型：main_sub=正副标题（标题 + 单位行）；unit_report=「某某单位汇报材料」单标题
+    title_mode = options.get("title_mode", "main_sub")
     for i, m in enumerate(materials, 1):
+        unit = (m.get("unit") or "").strip()
+        if title_mode == "unit_report" and unit:
+            title_text = unit + "汇报材料"
+        else:
+            title_text = m["title"]
         # 材料标题（方正小标宋简体、二号、居中、不加粗、段前段后间距 0；设大纲级别供自动目录抓取）
-        title_p = _add_para_runs(document, [(m["title"], False)], "title",
+        title_p = _add_para_runs(document, [(title_text, False)], "title",
                                 align=WD_ALIGN_PARAGRAPH.CENTER,
                                 space_before=Pt(0), space_after=Pt(0))
         _set_outline_level(title_p, 1)
         # 单位行（楷体_GB2312、三号、居中、段前段后间距 0）
-        unit = (m.get("unit") or "").strip()
-        if unit:
+        # 「某某单位汇报材料」模式下单位已并入标题，不再单独成行
+        if unit and title_mode != "unit_report":
             _add_para_runs(document, [(unit, False)], "unit",
                            align=WD_ALIGN_PARAGRAPH.CENTER,
                            space_before=Pt(0), space_after=Pt(0))
@@ -1044,9 +1098,9 @@ def build_body(document, materials, options, ctx, fmt=None):
                 # 正文：两段对齐
                 para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             _apply_clone_fonts(para, lvl, sizes)
-        # 材料之间分页（每份材料另起一页；最后一份后不再加分页，避免空白尾页）
+        # 材料之间分节（每份材料成为独立一节，新页起始；最后一份后不再分节，避免空白尾页）
         if options.get("each_material_new_page", True) and i < len(materials):
-            document.add_page_break()
+            _add_section_break(document)
         else:
             _add_para(document, "", align=WD_ALIGN_PARAGRAPH.LEFT)
 
@@ -1807,7 +1861,8 @@ def assemble(materials, output_path, cfg=None, options=None, fmt=None):
         {title, unit, date, dx, doc, blocks, paras}
         blocks 为有序的源块元素（段落/表格），已排除标题/单位/日期等。
     cfg: {cover_title, date_text, cover_title_size}
-    options: {remove_signoff, each_material_new_page}
+    options: {remove_signoff, each_material_new_page,
+              title_mode: "main_sub"(正副标题，默认) | "unit_report"(「某某单位汇报材料」)}
     fmt: 界面可调格式 {toc|body|h1|h2: {size, line_mode, line_value}}，
         仅作用于 目录内容/正文/一级标题/二级标题；表格/图片不受影响。
     返回输出路径。
@@ -1822,7 +1877,7 @@ def assemble(materials, output_path, cfg=None, options=None, fmt=None):
     _add_toc_styles(document, toc_size=fmt["toc"]["size"],
                     line_mode=fmt["toc"]["line_mode"],
                     line_value=fmt["toc"]["line_value"])  # 目录条目样式（界面可调）
-    _add_title_char_style(document)  # 材料标题字符样式（防止直接字体被复制进目录条目）
+    _add_title_style(document)  # 材料标题段落样式「汇编标题」（基于「正文」）
 
     # 第一节：封面（无页码）
     sec_cover = document.sections[0]
