@@ -35,6 +35,8 @@ tools/_pkg/
 app/.venv/
 app/libreoffice/
 app/runtime/
+# 运行时生成的本地设置（含界面格式偏好），不入库
+config.json
 __pycache__/
 *.pyc
 tools/__pycache__/
