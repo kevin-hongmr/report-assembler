@@ -74,9 +74,9 @@ python tools\build_server.py       :: 产出 汇报汇编程序_服务器版.zip
 
 依赖（`window/requirements.txt`）：`python-docx`、`lxml`、`PyQt6`、`PyMuPDF`、`pywin32`。
 
-## 分支说明
+## 说明
 
-- **`main`（默认）**：Windows 版（单机版 + 服务器版）。
-- **`guochan`**：国产系统（银河麒麟 / 统信 UOS，aarch64）专用版。
+- 本仓库仅包含 **Windows 版**（单机版 + 服务器版）。
+- 国产系统（银河麒麟 / 统信 UOS）版本不在本仓库。
 
 > 大文件（便携 LibreOffice、离线依赖 wheel、`build/` 构建产物）体积大且可重新生成，未入库。
