@@ -34,6 +34,7 @@ tools/_pkg/
 # ===== 开发环境与缓存 =====
 app/.venv/
 app/libreoffice/
+app/runtime/
 __pycache__/
 *.pyc
 tools/__pycache__/
