@@ -1003,6 +1003,29 @@ def build_toc(document, materials):
     _add_toc_field(document)
 
 
+def _strip_source_page_props(clone):
+    """剔除源块中会破坏统一版式的分页 / 分节设置。
+
+    - ``w:pPr/w:sectPr``：源文档的**节设置**（含页边距）。实测"格式混乱"的源
+      文档会带 bottom=0、左右 3.15cm 等混乱值，克隆进输出就会产生边距不符的
+      "节"（表现为某些页面上下边距不对）。
+    - ``w:pPr/w:pageBreakBefore``：源文档的段前分页，会在汇编稿里插入多余分页。
+    - ``w:br w:type="page"``：源文档的分页符，同上。
+
+    汇编稿的分节 / 分页统一由程序控制（每份材料一节），故这些一律剔除。
+    """
+    for pPr in clone.iter(qn("w:pPr")):
+        for tag in ("sectPr", "pageBreakBefore"):
+            el = pPr.find(qn("w:" + tag))
+            if el is not None:
+                pPr.remove(el)
+    for br in list(clone.iter(qn("w:br"))):
+        if br.get(qn("w:type")) == "page":
+            parent = br.getparent()
+            if parent is not None:
+                parent.remove(br)
+
+
 def build_body(document, materials, options, ctx, fmt=None):
     """正文：每份材料 = 材料标题 + 单位行 + 内容（克隆源文档块元素）。
 
@@ -1051,6 +1074,7 @@ def build_body(document, materials, options, ctx, fmt=None):
         for kind, el, p in blocks:
             clone = copy.deepcopy(el)
             _remap_block_refs(clone, src_dx, ctx)   # 图片 rId / 编号 numId / 样式 重映射
+            _strip_source_page_props(clone)         # 剔除源的节设置/分页，保证统一版式
             if kind == "tbl":
                 # 表格：原样保留格式；把单元格段落/run 的有效格式物化为直接格式，
                 # 使其行距/段后间距/字体等与源文档一致（不随输出默认样式改变）。
