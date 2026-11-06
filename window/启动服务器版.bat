@@ -1,19 +1,20 @@
 @echo off
 cd /d "%~dp0"
-title DocAssembler Server (LAN)
 
-rem Launch order: bundled runtime -> dev venv -> system python
-if exist "app\runtime\python.exe" (
-    "app\runtime\python.exe" "app\server.py" --port 8000
+rem Launch the server WITHOUT a console window (pythonw + start).
+rem A tray icon appears at the bottom-right of the screen.
+
+if exist "app\runtime\pythonw.exe" (
+    start "" "app\runtime\pythonw.exe" "app\server.py" --port 8000
     goto end
 )
-if exist "app\.venv\Scripts\python.exe" (
-    "app\.venv\Scripts\python.exe" "app\server.py" --port 8000
+if exist "app\.venv\Scripts\pythonw.exe" (
+    start "" "app\.venv\Scripts\pythonw.exe" "app\server.py" --port 8000
     goto end
 )
-where python.exe >nul 2>nul
+where pythonw.exe >nul 2>nul
 if not errorlevel 1 (
-    python.exe "app\server.py" --port 8000
+    start "" pythonw.exe "app\server.py" --port 8000
     goto end
 )
 

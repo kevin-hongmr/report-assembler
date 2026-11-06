@@ -4,13 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>汇报汇编程序 · 服务器版</title>
+<link rel="icon" href="/icon.png">
 <style>
   :root { --fg:#1f2937; --muted:#6b7280; --line:#e5e7eb; --bg:#f5f7fa; --pri:#2563eb; --pri2:#1d4ed8; }
   * { box-sizing: border-box; }
   body { margin:0; font:14px/1.6 "Microsoft YaHei","PingFang SC",Arial,sans-serif; color:var(--fg); background:var(--bg); }
-  header { background:#fff; border-bottom:1px solid var(--line); padding:14px 22px; display:flex; align-items:center; gap:12px; }
+  header { background:#fff; border-bottom:1px solid var(--line); padding:11px 22px; display:flex; align-items:center; gap:10px; }
+  header img.logo { width:28px; height:28px; border-radius:6px; }
   header h1 { font-size:17px; margin:0; font-weight:600; }
-  header .tag { font-size:12px; color:var(--muted); }
+  header .tag { font-size:12px; color:var(--muted); margin-left:auto; }
   header .dot { width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;margin-right:5px; }
   main { max-width:980px; margin:18px auto 60px; padding:0 16px; }
   .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:14px; }
@@ -36,20 +38,38 @@
   fieldset { border:0; padding:0; margin:8px 0 0; }
   legend { color:var(--muted); padding:0; margin-bottom:4px; }
   fieldset label { display:block; margin:4px 0; }
-  .actions { display:flex; align-items:center; gap:14px; margin:18px 0; }
+  .actions { display:flex; align-items:center; gap:12px; margin:18px 0; flex-wrap:wrap; }
   button.primary { background:var(--pri); color:#fff; border:0; border-radius:8px; padding:10px 26px; font:inherit; font-weight:600; cursor:pointer; }
   button.primary:hover { background:var(--pri2); }
-  button:disabled { opacity:.55; cursor:not-allowed; }
+  button.ghost { background:#fff; color:var(--pri); border:1px solid #bfdbfe; border-radius:8px; padding:10px 20px; font:inherit; font-weight:600; cursor:pointer; }
+  button.ghost:hover { background:#eff6ff; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
   #status { color:var(--muted); }
   #result a { display:inline-block; margin-top:6px; background:#dcfce7; color:#166534; padding:10px 18px; border-radius:8px; text-decoration:none; font-weight:600; }
   .err { color:#b91c1c; }
   .grid4 { display:grid; grid-template-columns: 92px 1fr 1fr 1fr; gap:8px 10px; align-items:center; }
   .grid4 .h { color:var(--muted); font-size:12px; }
-  #preview img { display:block; width:100%; max-width:820px; margin:10px auto; border:1px solid var(--line); border-radius:4px; }
+
+  /* 预览侧边栏 */
+  .scrim { position:fixed; inset:0; background:rgba(15,23,42,.35); opacity:0; pointer-events:none; transition:.22s; z-index:20; }
+  .scrim.open { opacity:1; pointer-events:auto; }
+  .drawer { position:fixed; top:0; right:0; height:100%; width:min(800px,94vw); background:#fff;
+            box-shadow:-6px 0 26px rgba(15,23,42,.18); transform:translateX(102%); transition:transform .25s ease;
+            display:flex; flex-direction:column; z-index:30; }
+  .drawer.open { transform:none; }
+  .drawer-head { display:flex; align-items:center; padding:12px 18px; border-bottom:1px solid var(--line); }
+  .drawer-head b { font-size:15px; }
+  .drawer-head .sp { flex:1; }
+  .drawer-head button { background:#eef2f7; color:#334155; border:0; border-radius:6px; padding:4px 12px; cursor:pointer; }
+  .drawer-body { flex:1; overflow:auto; padding:14px 18px 28px; background:#eef2f7; }
+  .drawer-body img { display:block; width:100%; max-width:760px; margin:0 auto 12px; background:#fff;
+                     border:1px solid #dbe2ea; border-radius:3px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .drawer-body .ph { color:var(--muted); text-align:center; padding:60px 0; }
 </style>
 </head>
 <body>
 <header>
+  <img class="logo" src="/icon.png" alt="">
   <h1>汇报汇编程序 · 服务器版</h1>
   <span class="tag"><span class="dot"></span><span id="health">正在检测 WPS…</span></span>
 </header>
@@ -60,7 +80,7 @@
     <div id="drop">把 <b>.doc / .docx / .wps</b> 文件拖到这里，或 <b>点击选择</b>（可多选）</div>
     <input type="file" id="files" multiple accept=".doc,.docx,.wps,.DOC,.DOCX,.WPS" hidden>
     <div id="filelist"></div>
-    <p class="hint">列表顺序即汇编顺序，可用「↑ ↓」调整；「单位 / 标题」可直接修改（留空则自动识别）。文件名建议用「单位-标题」。</p>
+    <p class="hint">上传后会自动识别「单位 / 标题」（读文档内容），也可直接修改；列表顺序即汇编顺序，用「↑ ↓」调整。</p>
   </section>
 
   <section class="card">
@@ -87,16 +107,21 @@
 
   <div class="actions">
     <button id="btn" class="primary">开始汇编</button>
+    <button id="btnPreview" class="ghost" disabled>预览</button>
     <span id="status"></span>
   </div>
 
   <div id="result"></div>
-
-  <section class="card" id="previewCard" style="display:none">
-    <h2>预览（成品逐页渲染）</h2>
-    <div id="preview"></div>
-  </section>
 </main>
+
+<div id="scrim" class="scrim"></div>
+<aside id="drawer" class="drawer">
+  <div class="drawer-head">
+    <b>成品预览</b><span class="sp"></span>
+    <button id="drawerClose">关闭</button>
+  </div>
+  <div id="drawerBody" class="drawer-body"><div class="ph">尚未生成预览</div></div>
+</aside>
 
 <script>
 const SIZES = [["初号",42],["小初",36],["一号",26],["小一",24],["二号",22],["小二",18],
@@ -104,8 +129,8 @@ const SIZES = [["初号",42],["小初",36],["一号",26],["小一",24],["二号"
 const FMT_KEYS = [["toc","目录内容"],["body","正文"],["h1","一级标题"],["h2","二级标题"]];
 const $ = (id) => document.getElementById(id);
 
-// picked: [{file, unit, title}]
-let picked = [];
+let picked = [];          // [{file, unit, title, edited}]
+let lastToken = null, lastPages = 0;
 
 (function init() {
   const d = new Date();
@@ -149,12 +174,39 @@ function parseName(name) {
   const i = base.indexOf("-");
   return i >= 0 ? [base.slice(0, i).trim(), base.slice(i+1).trim()] : ["", base.trim()];
 }
-function addFiles(list) {
+
+async function addFiles(list) {
+  const added = [];
   for (const f of list) {
     const [u, t] = parseName(f.name);
-    picked.push({ file: f, unit: u, title: t });
+    const it = { file: f, unit: u, title: t, edited: false };
+    picked.push(it); added.push(it);
   }
   renderFiles();
+  if (!added.length) return;
+
+  setStatus("正在识别单位 / 标题…");
+  try {
+    const files = [];
+    for (const it of added) files.push({ name: it.file.name, b64: await toB64(it.file) });
+    const resp = await fetch("/api/analyze", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ files })
+    });
+    const j = await resp.json();
+    if (j.ok) {
+      (j.items || []).forEach(r => {
+        const it = added.find(x => x.file.name === r.name);
+        if (it && !it.edited) {
+          if (r.unit) it.unit = r.unit;
+          if (r.title) it.title = r.title;
+        }
+      });
+      renderFiles();
+    }
+    setStatus("");
+  } catch (e) {
+    setStatus("识别失败，可手动填写单位/标题", true);
+  }
 }
 
 function renderFiles() {
@@ -167,13 +219,13 @@ function renderFiles() {
   picked.forEach((it, idx) => {
     const tr = document.createElement("tr");
     tr.innerHTML = "<td class='n'>" + (idx+1) + "</td><td class='fn'></td>" +
-                   "<td><input type='text'></td><td><input type='text'></td><td class='ops'></td>";
+                   "<td><input type='text' placeholder='自动识别'></td>" +
+                   "<td><input type='text' placeholder='自动识别'></td><td class='ops'></td>";
     tr.children[1].textContent = it.file.name;
     const iu = tr.children[2].firstChild, it2 = tr.children[3].firstChild;
     iu.value = it.unit; it2.value = it.title;
-    iu.placeholder = "自动识别"; it2.placeholder = "自动识别";
-    iu.addEventListener("input", () => it.unit = iu.value);
-    it2.addEventListener("input", () => it.title = it2.value);
+    iu.addEventListener("input", () => { it.unit = iu.value; it.edited = true; });
+    it2.addEventListener("input", () => { it.title = it2.value; it.edited = true; });
 
     const ops = tr.children[4];
     const mk = (txt, fn, dis) => {
@@ -197,6 +249,33 @@ function move(i, d) {
   renderFiles();
 }
 
+// ---------- 预览侧边栏 ----------
+function openDrawer() {
+  $("scrim").classList.add("open");
+  $("drawer").classList.add("open");
+}
+function closeDrawer() {
+  $("scrim").classList.remove("open");
+  $("drawer").classList.remove("open");
+}
+$("drawerClose").addEventListener("click", closeDrawer);
+$("scrim").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+$("btnPreview").addEventListener("click", () => {
+  if (!lastToken || !lastPages) { return; }
+  const body = $("drawerBody");
+  body.innerHTML = "";
+  for (let p = 1; p <= lastPages; p++) {
+    const img = document.createElement("img");
+    img.src = "/api/preview/" + lastToken + "/page_" + p + ".png";
+    img.loading = "lazy";
+    img.alt = "第 " + p + " 页";
+    body.appendChild(img);
+  }
+  openDrawer();
+});
+
 // ---------- 提交 ----------
 const toB64 = (file) => new Promise((res, rej) => {
   const r = new FileReader();
@@ -211,14 +290,12 @@ $("btn").addEventListener("click", async () => {
   btn.disabled = true;
   setStatus("正在上传并汇编，请稍候…");
   $("result").innerHTML = "";
-  $("previewCard").style.display = "none";
-  $("preview").innerHTML = "";
+  lastToken = null; lastPages = 0; $("btnPreview").disabled = true;
 
   try {
     const files = [];
     for (const it of picked) {
-      files.push({ name: it.file.name, b64: await toB64(it.file),
-                   unit: it.unit, title: it.title });
+      files.push({ name: it.file.name, b64: await toB64(it.file), unit: it.unit, title: it.title });
     }
     const fmt = {};
     for (const [key] of FMT_KEYS) {
@@ -249,23 +326,14 @@ $("btn").addEventListener("click", async () => {
     const j = await resp.json();
     if (!j.ok) throw new Error(j.error || "汇编失败");
 
-    setStatus("汇编完成" + (j.pages ? "，预览 " + j.pages + " 页" : ""));
+    lastToken = j.token; lastPages = j.pages || 0;
+    $("btnPreview").disabled = !(lastPages > 0);
+    setStatus("汇编完成" + (lastPages ? "（预览 " + lastPages + " 页）" : ""));
+
     const a = document.createElement("a");
     a.href = "/api/download/" + j.token;
     a.textContent = "⬇ 下载 " + (j.name || "汇编结果.docx");
     $("result").appendChild(a);
-
-    if (j.pages > 0) {
-      const box = $("preview");
-      for (let p = 1; p <= j.pages; p++) {
-        const img = document.createElement("img");
-        img.src = "/api/preview/" + j.token + "/page_" + p + ".png";
-        img.loading = "lazy";
-        img.alt = "第 " + p + " 页";
-        box.appendChild(img);
-      }
-      $("previewCard").style.display = "";
-    }
   } catch (e) {
     setStatus("失败：" + e.message, true);
   } finally {

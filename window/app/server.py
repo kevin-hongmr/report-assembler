@@ -25,7 +25,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from app.core import pipeline, converter
+from app.core import assembler, converter, pipeline
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(HERE, "web")
@@ -60,6 +60,25 @@ def _cleanup_jobs():
                 pass
 
 
+def _derive_unit(name):
+    """从**原始文件名**推断单位（「单位-标题」取前段；否则用整个文件名）。
+
+    注意：不能用服务器临时文件名（src01.docx）推断，否则单位会变成 src01。
+    """
+    base = os.path.splitext(os.path.basename(name or ""))[0].strip()
+    if "-" in base:
+        return base.split("-", 1)[0].strip()
+    return base
+
+
+def _derive_title(name):
+    """从原始文件名推断标题（「单位-标题」取后段；否则用整个文件名）。"""
+    base = os.path.splitext(os.path.basename(name or ""))[0].strip()
+    if "-" in base:
+        return base.split("-", 1)[1].strip()
+    return base
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "DocAssemblerServer/1.0"
 
@@ -91,6 +110,9 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
             return self._file(os.path.join(WEB_DIR, "index.html"), "text/html; charset=utf-8")
+
+        if path in ("/icon.png", "/favicon.ico"):
+            return self._file(os.path.join(WEB_DIR, "icon.png"), "image/png")
 
         if path == "/api/health":
             try:
@@ -138,7 +160,7 @@ class Handler(BaseHTTPRequestHandler):
     # ---------------- POST ----------------
     def do_POST(self):
         path = self.path.split("?")[0]
-        if path != "/api/assemble":
+        if path not in ("/api/assemble", "/api/analyze"):
             return self._json(404, {"ok": False, "error": "not found"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -148,9 +170,67 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"ok": False, "error": "请求解析失败：%s" % e})
 
         try:
+            if path == "/api/analyze":
+                return self._json(200, self._analyze(req))
             return self._json(200, self._assemble(req))
         except Exception as e:
             return self._json(500, {"ok": False, "error": str(e)[:800]})
+
+    def _save_files(self, files, job_dir):
+        """把 base64 文件落盘，返回 [(显示名, 本地路径)]。"""
+        out = []
+        for i, f in enumerate(files, 1):
+            name = os.path.basename(f.get("name") or ("file%d" % i))
+            try:
+                data = base64.b64decode(f.get("b64") or "")
+            except Exception:
+                data = b""
+            if not data:
+                continue
+            ext = os.path.splitext(name)[1].lower() or ".docx"
+            p = os.path.join(job_dir, "src%02d%s" % (i, ext))
+            with open(p, "wb") as fh:
+                fh.write(data)
+            out.append((name, p))
+        return out
+
+    def _analyze(self, req):
+        """识别每份文档的单位与标题（与单机版一致：读内容，文件名仅兜底）。"""
+        files = req.get("files") or []
+        if not files:
+            raise RuntimeError("未收到文件")
+        os.makedirs(WORK_ROOT, exist_ok=True)
+        job_dir = os.path.join(WORK_ROOT, "an_" + uuid.uuid4().hex)
+        os.makedirs(job_dir, exist_ok=True)
+        items = self._save_files(files, job_dir)
+        result = []
+        with _asm_lock:                     # 可能触发 .doc/.wps 的 WPS COM 转换
+            com_ready = False
+            try:
+                import pythoncom
+                pythoncom.CoInitialize()
+                com_ready = True
+            except Exception:
+                pass
+            try:
+                for name, p in items:
+                    try:
+                        dx = converter.convert_to_docx(p, job_dir)
+                        info = assembler.analyze(dx)
+                        unit = (info.get("unit") or "").strip() or _derive_unit(name)
+                        title = (info.get("title") or "").strip() or _derive_title(name)
+                        result.append({"name": name, "unit": unit, "title": title})
+                    except Exception as e:
+                        result.append({"name": name, "unit": _derive_unit(name),
+                                       "title": _derive_title(name), "error": str(e)[:200]})
+            finally:
+                if com_ready:
+                    try:
+                        import pythoncom
+                        pythoncom.CoUninitialize()
+                    except Exception:
+                        pass
+        return {"ok": True, "items": result}
 
     def _assemble(self, req):
         files = req.get("files") or []
@@ -179,8 +259,8 @@ class Handler(BaseHTTPRequestHandler):
             with open(p, "wb") as out:
                 out.write(data)
             sources.append({"path": p,
-                            "unit": (f.get("unit") or "").strip(),
-                            "title": (f.get("title") or "").strip()})
+                            "unit": (f.get("unit") or "").strip() or _derive_unit(name),
+                            "title": (f.get("title") or "").strip() or _derive_title(name)})
         if not sources:
             raise RuntimeError("上传的文件为空")
 
@@ -222,27 +302,92 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "token": token, "name": "汇编结果.docx", "pages": pages}
 
 
+def _tray_icon():
+    """托盘图标：优先用 app/web/icon.png（本项目生成的服务器图标）。"""
+    from PyQt6.QtGui import QIcon
+    for p in (os.path.join(WEB_DIR, "icon.png"),
+              os.path.join(os.path.dirname(HERE), "图标.png")):
+        if os.path.isfile(p):
+            return QIcon(p)
+    return QIcon()
+
+
+def _run_tray(port):
+    """右下角系统托盘：双击打开界面，右键菜单可查看地址 / 退出。"""
+    import webbrowser
+
+    from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+
+    app = QApplication([])
+    app.setQuitOnLastWindowClosed(False)
+
+    ip = _lan_ip()
+    url = "http://%s:%d" % (ip, port)
+    tray = QSystemTrayIcon(_tray_icon())
+    tray.setToolTip("汇报汇编程序 · 服务器版\n" + url)
+
+    menu = QMenu()
+    a_open = menu.addAction("打开界面（本机）")
+    a_addr = menu.addAction("局域网地址：" + url)
+    a_addr.setEnabled(False)
+    menu.addSeparator()
+    a_quit = menu.addAction("退出")
+    tray.setContextMenu(menu)
+
+    a_open.triggered.connect(lambda: webbrowser.open("http://127.0.0.1:%d" % port))
+    a_quit.triggered.connect(app.quit)
+
+    def _on_activated(reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            webbrowser.open("http://127.0.0.1:%d" % port)
+
+    tray.activated.connect(_on_activated)
+    tray.show()
+    try:
+        tray.showMessage("汇报汇编程序 · 服务器版",
+                         "服务已启动，局域网访问：\n" + url,
+                         QSystemTrayIcon.MessageIcon.Information, 5000)
+    except Exception:
+        pass
+
+    print("托盘已启动；右键图标可查看地址或退出。")
+    return app.exec()
+
+
 def main():
     ap = argparse.ArgumentParser(description="汇报汇编程序 · 服务器版")
     ap.add_argument("--host", default="0.0.0.0", help="监听地址（默认 0.0.0.0，局域网可访问）")
     ap.add_argument("--port", type=int, default=8000, help="端口（默认 8000）")
+    ap.add_argument("--console", action="store_true", help="控制台模式（不显示托盘图标）")
     opts = ap.parse_args()
 
     os.makedirs(WORK_ROOT, exist_ok=True)
     srv = ThreadingHTTPServer((opts.host, opts.port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
     ip = _lan_ip()
     print("=" * 56)
     print("  汇报汇编程序 · 服务器版  已启动")
     print("  本机访问：   http://127.0.0.1:%d" % opts.port)
     print("  局域网访问： http://%s:%d" % (ip, opts.port))
     print("  （同一局域网的电脑用浏览器打开上面第二个地址）")
-    print("  按 Ctrl+C 停止服务")
     print("=" * 56)
+
     try:
-        srv.serve_forever()
+        if not opts.console:
+            try:
+                return _run_tray(opts.port)
+            except Exception as e:
+                print("托盘启动失败，退回控制台模式：", e)
+        while True:
+            time.sleep(3600)
     except KeyboardInterrupt:
         print("\n已停止")
     finally:
+        try:
+            srv.shutdown()
+        except Exception:
+            pass
         srv.server_close()
 
 
