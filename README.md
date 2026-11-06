@@ -1,41 +1,82 @@
-# 文档汇编程序
+# 汇报汇编程序
 
-把多份公文汇报材料（Word / WPS 文档）自动汇编成一份排版规范、格式统一的合订本（`.docx`）。适用于政府机关、企事业单位的会议材料汇编场景。
+把多份公文汇报材料（Word / WPS 文档）自动汇编成一份排版规范、格式统一的合订本（`.docx`）：**封面 + 目录 + 正文**。适用于政府机关、企事业单位的会议材料汇编。
 
-> 详细功能、界面说明与常见问题见 [`window/README.md`](./window/README.md)。
+## 两个版本
 
-## 本仓库内容
+| 版本 | 形态 | 适用场景 |
+| --- | --- | --- |
+| **单机版** | 桌面程序（PyQt6 界面） | 一台电脑自己用，解压即跑 |
+| **服务器版** | 局域网 Web 服务 | 一台电脑运行，其他电脑用浏览器访问，多人共用 |
 
-**`main` 分支（默认）= Windows 便携版**，完整程序在 [`window/`](./window) 文件夹。
+两个版本**共用同一套汇编引擎**，输出格式完全一致。
 
-| 项目 | 说明 |
+## 功能
+
+- 一次汇编多份 `.doc` / `.docx` / `.wps`，自动提取**单位 / 标题**，可手动修改、调整顺序
+- 统一排版：**上下页边距 3cm、左右 2.7cm**；正文三号仿宋；一级标题黑体、二级标题楷体
+- 每份材料**独立成节**（分节符），页码连续
+- 材料标题两种格式可选：**正副标题格式** / **某某单位汇报材料**
+- 材料标题统一为段落样式「**汇编标题**」（基于「正文」）
+- 自动清除原文档落款；自动生成目录（在 WPS / Word 中右键「更新域」）
+- 服务器版支持：网页上传、单位/标题自动识别、排序、**逐页预览**、一键下载
+
+## 下载
+
+到 **[Releases](https://github.com/kevin-hongmr/report-assembler/releases)** 下载，解压即用（已内置 Python 运行环境）：
+
+| 包 | 说明 |
 | --- | --- |
-| 适用系统 | Windows 7 / 10 / 11（64 位） |
-| 转换引擎 | 本机 **WPS Office 专业版 / 政府版**（负责 `.doc`/`.wps` → `.docx` 及预览） |
-| Python | 已内置运行环境，**无需安装** |
+| `汇报汇编程序_单机版.zip` | Windows 桌面版 |
+| `汇报汇编程序_服务器版.zip` | Windows 局域网服务版 |
 
-> **国产系统版（银河麒麟 / 统信 UOS）** 不在本分支，保留在 [`guochan`](../../tree/guochan) 分支（内置便携 LibreOffice、完全离线）。
+## 运行要求
 
-## 直接下载可运行包
-
-到 **[Releases](https://github.com/kevin-hongmr/report-assembler/releases)** 下载，解压即用：
-
-| 平台 | 文件 |
+| 项目 | 要求 |
 | --- | --- |
-| Windows 便携版 | `report-assembler-windows-portable-*.zip` |
-| 国产系统（aarch64，飞腾/鲲鹏） | `report-assembler-aarch64-*.zip` |
+| 系统 | Windows 7 / 10 / 11（64 位） |
+| WPS | **需安装 WPS Office**（`.doc` / `.wps` 转换与预览依赖它） |
+| Python | **无需安装**（已内置） |
+| 网络（服务器版） | 服务器与使用者电脑在**同一局域网** |
+
+## 使用
+
+**单机版**：解压后双击 `启动单机版.bat`。
+
+**服务器版**：解压后双击 `启动服务器版.bat`（**不弹出命令行窗口**，右下角出现托盘图标），
+局域网内其他电脑用浏览器访问 `http://<服务器IP>:12362`。右键托盘图标可查看局域网地址。
+
+详细说明见 [`window/使用说明_服务器版.md`](./window/使用说明_服务器版.md) 与 [`window/README_目录说明.md`](./window/README_目录说明.md)。
 
 ## 目录结构
 
 ```
 .
-├── window/      # Windows 便携版 —— 完整程序（app/、tools/、字体包/、启动汇编程序.bat 等）
-└── README.md    # 本文件
+├── window/                     # Windows 版源码（单机版 + 服务器版共用）
+│   ├── 启动单机版.bat
+│   ├── 启动服务器版.bat
+│   ├── app/core/               # ★ 共享汇编引擎
+│   ├── app/ui/                 # 单机版界面
+│   ├── app/server.py           # 服务器版服务
+│   ├── app/web/                # 服务器版网页与图标
+│   ├── app/runtime/            # 内置运行环境（构建产物，不入库）
+│   └── tools/build_*.py        # 打包脚本
+└── README.md
 ```
+
+## 自行打包
+
+```bat
+cd window
+python tools\build_standalone.py   :: 产出 汇报汇编程序_单机版.zip
+python tools\build_server.py       :: 产出 汇报汇编程序_服务器版.zip
+```
+
+依赖（`window/requirements.txt`）：`python-docx`、`lxml`、`PyQt6`、`PyMuPDF`、`pywin32`。
 
 ## 分支说明
 
-- **`main`（默认）**：Windows 便携版，程序在 `window/`。
-- **`guochan`**：国产系统（银河麒麟 / 统信 UOS）专用版，程序在根目录。
+- **`main`（默认）**：Windows 版（单机版 + 服务器版）。
+- **`guochan`**：国产系统（银河麒麟 / 统信 UOS，aarch64）专用版。
 
 > 大文件（便携 LibreOffice、离线依赖 wheel、`build/` 构建产物）体积大且可重新生成，未入库。
