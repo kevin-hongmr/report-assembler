@@ -4,7 +4,7 @@
 产出：
   _pkg/汇报汇编程序_服务器版/
     ├── app/{__init__.py, core, server.py, web, fonts_bundled, runtime}
-    ├── 启动服务器.bat
+    ├── 启动服务器版.bat
     ├── 使用说明_服务器版.md
     └── 图标.png
   汇报汇编程序_服务器版.zip
@@ -47,7 +47,7 @@ bat = ('@echo off\n'
        'echo Starting server on port 8000 ...\n'
        '"app\\runtime\\python.exe" "app\\server.py" --port 8000\n'
        'pause\n')
-with open(os.path.join(DEST, "启动服务器.bat"), "w", encoding="ascii", newline="\r\n") as f:
+with open(os.path.join(DEST, "启动服务器版.bat"), "w", encoding="ascii", newline="\r\n") as f:
     f.write(bat)
 
 # 4) 说明与图标

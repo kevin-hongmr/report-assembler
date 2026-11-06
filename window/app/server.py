@@ -110,6 +110,19 @@ class Handler(BaseHTTPRequestHandler):
                               "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                               download_name=job["name"])
 
+        if path.startswith("/api/preview/"):
+            parts = path.split("/")           # ['', 'api', 'preview', token, 'page_1.png']
+            if len(parts) >= 5:
+                token, fname = parts[3], os.path.basename(parts[4])
+                with _jobs_lock:
+                    job = _jobs.get(token)
+                pdir = (job or {}).get("preview_dir")
+                if pdir:
+                    p = os.path.join(pdir, fname)
+                    if os.path.isfile(p):
+                        return self._file(p, "image/png")
+            return self._json(404, {"ok": False, "error": "not found"})
+
         return self._json(404, {"ok": False, "error": "not found"})
 
     def _file(self, path, ctype, download_name=None):
@@ -172,6 +185,8 @@ class Handler(BaseHTTPRequestHandler):
             raise RuntimeError("上传的文件为空")
 
         out_path = os.path.join(job_dir, "汇编结果.docx")
+        preview_dir = os.path.join(job_dir, "preview")
+        pages = 0
 
         # WPS COM 需串行；工作线程内须 CoInitialize
         with _asm_lock:
@@ -184,6 +199,14 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             try:
                 pipeline.run_assemble(sources, out_path, cfg, options, job_dir, fmt=fmt)
+                # 预览：docx -> PDF -> 页图（复用 WPS COM，同在本线程内）
+                if req.get("preview", True):
+                    try:
+                        from app.core import preview as preview_mod
+                        imgs = preview_mod.build_preview(out_path, preview_dir)
+                        pages = len(imgs)
+                    except Exception as e:
+                        print("预览生成失败:", str(e)[:200])
             finally:
                 if com_ready:
                     try:
@@ -194,8 +217,9 @@ class Handler(BaseHTTPRequestHandler):
 
         token = uuid.uuid4().hex
         with _jobs_lock:
-            _jobs[token] = {"path": out_path, "name": "汇编结果.docx", "ts": time.time()}
-        return {"ok": True, "token": token, "name": "汇编结果.docx"}
+            _jobs[token] = {"path": out_path, "name": "汇编结果.docx",
+                            "preview_dir": preview_dir, "pages": pages, "ts": time.time()}
+        return {"ok": True, "token": token, "name": "汇编结果.docx", "pages": pages}
 
 
 def main():

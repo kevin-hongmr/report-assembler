@@ -4,7 +4,7 @@
 产出：
   _pkg/汇报汇编程序_单机版/
     ├── app/{main.py, core, ui, fonts_bundled, runtime}
-    ├── 启动汇编程序.bat
+    ├── 启动单机版.bat
     ├── 使用说明.md
     └── 图标.png
   汇报汇编程序_单机版.zip
@@ -43,7 +43,7 @@ print("运行环境复制完成")
 bat = ('@echo off\n'
        'cd /d "%~dp0"\n'
        'start "" "app\\runtime\\pythonw.exe" "app\\main.py"\n')
-with open(os.path.join(DEST, "启动汇编程序.bat"), "w", encoding="ascii", newline="\r\n") as f:
+with open(os.path.join(DEST, "启动单机版.bat"), "w", encoding="ascii", newline="\r\n") as f:
     f.write(bat)
 
 # 4) 图标 + 使用说明
