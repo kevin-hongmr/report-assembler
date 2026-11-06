@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>汇报汇编程序 · 服务器版</title>
+<style>
+  :root { --fg:#1f2937; --muted:#6b7280; --line:#e5e7eb; --bg:#f5f7fa; --pri:#2563eb; --pri2:#1d4ed8; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.6 "Microsoft YaHei","PingFang SC",Arial,sans-serif; color:var(--fg); background:var(--bg); }
+  header { background:#fff; border-bottom:1px solid var(--line); padding:14px 22px; display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  header .tag { font-size:12px; color:var(--muted); }
+  header .dot { width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;margin-right:5px; }
+  main { max-width:920px; margin:18px auto 60px; padding:0 16px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:14px; }
+  .card h2 { font-size:14px; margin:0 0 12px; font-weight:600; }
+  label.row { display:flex; align-items:center; gap:10px; margin:8px 0; }
+  label.row > span { width:120px; color:var(--muted); flex:none; }
+  input[type=text], input[type=number], select { padding:6px 9px; border:1px solid var(--line); border-radius:6px; font:inherit; background:#fff; }
+  input[type=text] { flex:1; min-width:0; }
+  input[type=number] { width:96px; }
+  select { min-width:96px; }
+  .hint { color:var(--muted); font-size:12px; margin:8px 0 0; }
+  #drop { border:2px dashed #cbd5e1; border-radius:10px; padding:22px; text-align:center; color:var(--muted); cursor:pointer; transition:.15s; }
+  #drop.over { border-color:var(--pri); background:#eff6ff; }
+  #drop b { color:var(--pri); }
+  #filelist { margin-top:10px; }
+  #filelist div { padding:6px 8px; border:1px solid var(--line); border-radius:6px; margin-top:6px; display:flex; justify-content:space-between; gap:10px; }
+  #filelist .sz { color:var(--muted); font-size:12px; flex:none; }
+  fieldset { border:0; padding:0; margin:8px 0 0; }
+  legend { color:var(--muted); padding:0; margin-bottom:4px; }
+  fieldset label { display:block; margin:4px 0; }
+  .actions { display:flex; align-items:center; gap:14px; margin:18px 0; }
+  button { background:var(--pri); color:#fff; border:0; border-radius:8px; padding:10px 26px; font:inherit; font-weight:600; cursor:pointer; }
+  button:hover { background:var(--pri2); }
+  button:disabled { opacity:.55; cursor:not-allowed; }
+  #status { color:var(--muted); }
+  #result a { display:inline-block; margin-top:6px; background:#dcfce7; color:#166534; padding:10px 18px; border-radius:8px; text-decoration:none; font-weight:600; }
+  .err { color:#b91c1c; }
+  .grid4 { display:grid; grid-template-columns: 92px 1fr 1fr 1fr; gap:8px 10px; align-items:center; }
+  .grid4 .h { color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>汇报汇编程序 · 服务器版</h1>
+  <span class="tag"><span class="dot"></span><span id="health">正在检测 WPS…</span></span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. 选择要汇编的文档</h2>
+    <div id="drop">把 <b>.doc / .docx / .wps</b> 文件拖到这里，或 <b>点击选择</b>（可多选）</div>
+    <input type="file" id="files" multiple accept=".doc,.docx,.wps,.DOC,.DOCX,.WPS" hidden>
+    <div id="filelist"></div>
+    <p class="hint">文件名建议用「单位-标题」格式，例如 <code>区发改局-关于服务业发展情况的报告.docx</code>，程序会自动识别单位与标题。</p>
+  </section>
+
+  <section class="card">
+    <h2>2. 封面与选项</h2>
+    <label class="row"><span>汇编总标题</span><input type="text" id="coverTitle" placeholder="例如：全区经济工作会议"></label>
+    <label class="row"><span>日期</span><input type="text" id="dateText"></label>
+    <label class="row"><span>封面标题字号</span><input type="number" id="coverSize" value="22" min="16" max="56"><span style="width:auto">磅</span></label>
+    <label class="row" style="margin-top:12px"><input type="checkbox" id="signoff" checked> 自动清除原文档落款（单位 + 日期）</label>
+    <label class="row"><input type="checkbox" id="newpage" checked> 每份材料另起一页（分节符）</label>
+    <fieldset>
+      <legend>材料标题格式</legend>
+      <label><input type="radio" name="titleMode" value="main_sub" checked> 正副标题格式（标题 + 单位）</label>
+      <label><input type="radio" name="titleMode" value="unit_report"> 某某单位汇报材料（单标题，单位并入标题）</label>
+    </fieldset>
+  </section>
+
+  <section class="card">
+    <h2>3. 格式设置（仅作用于目录内容 / 正文 / 一级 / 二级标题）</h2>
+    <div class="grid4" id="fmtGrid">
+      <div class="h"></div><div class="h">字号</div><div class="h">行距方式</div><div class="h">行距值</div>
+    </div>
+    <p class="hint">表格、图片保持源文档格式，不受此处设置影响。</p>
+  </section>
+
+  <div class="actions">
+    <button id="btn">开始汇编</button>
+    <span id="status"></span>
+  </div>
+
+  <div id="result"></div>
+</main>
+
+<script>
+const SIZES = [["初号",42],["小初",36],["一号",26],["小一",24],["二号",22],["小二",18],
+               ["三号",16],["小三",15],["四号",14],["小四",12],["五号",10.5],["小五",9]];
+const FMT_KEYS = [["toc","目录内容"],["body","正文"],["h1","一级标题"],["h2","二级标题"]];
+
+const $ = (id) => document.getElementById(id);
+let picked = [];
+
+// ---- 初始化 ----
+(function init() {
+  const d = new Date();
+  $("dateText").value = d.getFullYear() + "年" + (d.getMonth()+1) + "月";
+
+  const grid = $("fmtGrid");
+  for (const [key, label] of FMT_KEYS) {
+    const name = document.createElement("div");
+    name.textContent = label;
+    const sel = document.createElement("select");
+    SIZES.forEach(([n, pt]) => {
+      const o = document.createElement("option");
+      o.value = pt; o.textContent = n + "（" + pt + "磅）";
+      if (pt === 16) o.selected = true;
+      sel.appendChild(o);
+    });
+    const mode = document.createElement("select");
+    mode.innerHTML = '<option value="exact">固定值</option><option value="multiple">行距倍数</option>';
+    const val = document.createElement("input");
+    val.type = "number"; val.step = "0.5"; val.value = "28.5";
+    val.dataset.unit = "磅";
+    mode.addEventListener("change", () => {
+      if (mode.value === "multiple") { val.value = "1"; val.step = "0.25"; }
+      else { val.value = "28.5"; val.step = "0.5"; }
+    });
+    sel.dataset.k = key + "_size"; mode.dataset.k = key + "_mode"; val.dataset.k = key + "_val";
+    grid.append(name, sel, mode, val);
+  }
+
+  // 健康检查
+  fetch("/api/health").then(r => r.json()).then(j => {
+    $("health").textContent = "转换引擎：" + (j.engine || "未知") + "（" + (j.ip || "") + "）";
+  }).catch(() => { $("health").textContent = "无法连接服务"; });
+})();
+
+// ---- 文件选择 / 拖拽 ----
+const drop = $("drop");
+drop.addEventListener("click", () => $("files").click());
+$("files").addEventListener("change", (e) => addFiles(e.target.files));
+["dragenter","dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => addFiles(e.dataTransfer.files));
+
+function addFiles(list) {
+  for (const f of list) picked.push(f);
+  renderFiles();
+}
+function renderFiles() {
+  const box = $("filelist");
+  box.innerHTML = "";
+  picked.forEach((f, i) => {
+    const row = document.createElement("div");
+    const left = document.createElement("span");
+    left.textContent = (i+1) + ". " + f.name;
+    const right = document.createElement("span");
+    right.className = "sz";
+    right.textContent = (f.size/1024/1024).toFixed(2) + " MB  ✕";
+    right.style.cursor = "pointer";
+    right.addEventListener("click", () => { picked.splice(i,1); renderFiles(); });
+    row.append(left, right);
+    box.appendChild(row);
+  });
+}
+
+// ---- 提交 ----
+const toB64 = (file) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(",")[1] || "");
+  r.onerror = rej;
+  r.readAsDataURL(file);
+});
+
+$("btn").addEventListener("click", async () => {
+  if (!picked.length) { setStatus("请先选择要汇编的文档", true); return; }
+  const btn = $("btn");
+  btn.disabled = true;
+  setStatus("正在上传并汇编，请稍候…");
+  $("result").innerHTML = "";
+
+  try {
+    const files = [];
+    for (const f of picked) files.push({ name: f.name, b64: await toB64(f) });
+
+    const fmt = {};
+    for (const [key] of FMT_KEYS) {
+      const size = document.querySelector('[data-k="' + key + '_size"]').value;
+      const mode = document.querySelector('[data-k="' + key + '_mode"]').value;
+      const val  = parseFloat(document.querySelector('[data-k="' + key + '_val"]').value);
+      fmt[key] = { size: parseFloat(size), line_mode: mode, line_value: val };
+    }
+    const titleMode = document.querySelector('input[name="titleMode"]:checked').value;
+
+    const body = {
+      files,
+      cfg: {
+        cover_title: $("coverTitle").value.trim(),
+        date_text: $("dateText").value.trim(),
+        cover_title_size: parseInt($("coverSize").value, 10) || 22
+      },
+      options: {
+        remove_signoff: $("signoff").checked,
+        each_material_new_page: $("newpage").checked,
+        title_mode: titleMode
+      },
+      fmt
+    };
+
+    const resp = await fetch("/api/assemble", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const j = await resp.json();
+    if (!j.ok) throw new Error(j.error || "汇编失败");
+
+    setStatus("汇编完成");
+    const a = document.createElement("a");
+    a.href = "/api/download/" + j.token;
+    a.textContent = "⬇ 下载 " + (j.name || "汇编结果.docx");
+    $("result").appendChild(a);
+  } catch (e) {
+    setStatus("失败：" + e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function setStatus(msg, isErr) {
+  $("status").textContent = msg;
+  $("status").className = isErr ? "err" : "";
+}
+</script>
+</body>
+</html>

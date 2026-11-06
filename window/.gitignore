@@ -28,6 +28,7 @@ tools/test_ind_behavior.py
 # ===== 构建产物与发布包（体积大，且可重新生成）=====
 build/
 _pkg/
+_pkg_server/
 tools/_pkg/
 *.zip
 
