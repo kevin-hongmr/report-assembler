@@ -43,7 +43,7 @@ print("运行环境复制完成")
 # 3) 启动脚本（ASCII + CRLF；pythonw 无控制台窗口，右下角出现托盘图标）
 bat = ('@echo off\n'
        'cd /d "%~dp0"\n'
-       'start "" "app\\runtime\\pythonw.exe" "app\\server.py" --port 8000\n')
+       'start "" "app\\runtime\\pythonw.exe" "app\\server.py" --port 12362\n')
 with open(os.path.join(DEST, "启动服务器版.bat"), "w", encoding="ascii", newline="\r\n") as f:
     f.write(bat)
 

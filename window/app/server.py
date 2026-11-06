@@ -5,7 +5,7 @@
 - 同一时刻只处理一次汇编（WPS COM 不适合并发），其余请求排队；
 - 结果 docx 以临时文件形式保留，供浏览器下载。
 
-启动：双击「启动服务器.bat」，或 ``python server.py --port 8000``。
+启动：双击「启动服务器版.bat」，或 ``python server.py --port 12362``。
 """
 import argparse
 import base64
@@ -357,7 +357,7 @@ def _run_tray(port):
 def main():
     ap = argparse.ArgumentParser(description="汇报汇编程序 · 服务器版")
     ap.add_argument("--host", default="0.0.0.0", help="监听地址（默认 0.0.0.0，局域网可访问）")
-    ap.add_argument("--port", type=int, default=8000, help="端口（默认 8000）")
+    ap.add_argument("--port", type=int, default=12362, help="端口（默认 12362）")
     ap.add_argument("--console", action="store_true", help="控制台模式（不显示托盘图标）")
     opts = ap.parse_args()
 
